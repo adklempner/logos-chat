@@ -237,7 +237,7 @@ proc messageQueueConsumer(client: ChatClient) {.async.} =
 proc start*(client: ChatClient) {.async.} =
   ## Start `ChatClient` and listens for incoming messages.
   client.ds.addDispatchQueue(client.inboundQueue)
-  asyncSpawn client.ds.start()
+  await client.ds.start()
 
   client.isRunning = true
 
