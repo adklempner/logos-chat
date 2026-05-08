@@ -137,7 +137,7 @@ else
     else
         # Sequencer guest binaries must match the lssa rev that lez-rln's host-side
         # client pins. Mismatch → DeserializeUnexpectedEnd (wire format divergence).
-        LSSA_REV=$(grep -oE 'rev\s*=\s*"[0-9a-f]+"' "$LEZ_RLN_DIR/lez-rln/Cargo.toml" | head -1 | sed 's/.*"\([0-9a-f]*\)"/\1/')
+        LSSA_REV=$(grep -oE '(rev|tag)\s*=\s*"[^"]+"' "$LEZ_RLN_DIR/lez-rln/Cargo.toml" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
         [ -z "$LSSA_REV" ] && die "Could not extract lssa rev from lez-rln/Cargo.toml"
         if ! git -C "$LEZ_RLN_DIR/lssa" merge-base --is-ancestor "$LSSA_REV" HEAD 2>/dev/null; then
             log "  Pinning lssa to $LSSA_REV..."

@@ -1,8 +1,47 @@
 # Mix + LEZ RLN Chat Simulation
 
-End-to-end private chat between two `logos-chat-module` clients over a 4-node mix network with LEZ-backed RLN spam protection against a local LEZ sequencer.
+End-to-end private chat between two logos-chat-module clients over a 4-node mix network with LEZ-backed RLN spam protection.
 
-Two logoscore instances (sender + receiver) load `chat_module` and establish an X3DH key agreement via an out-of-band intro bundle, then exchange double-ratchet-encrypted messages routed through 3-hop Sphinx onion routes with per-hop RLN proof generation and verification. Node 0 mounts the `rln_gifter` service; nodes 1-3 and both chat clients register RLN memberships on-chain via the gifter protocol. The chat clients run `mix: true, relay: false, filter: true` — the sender publishes via `lightpushPublish(mixify=true)`, the mix exit node verifies the RLN proof before fanning out via gossipsub relay to the shard, and the receiver consumes the message via a Waku filter subscription on one of the mix nodes.
+Two logoscore instances (sender + receiver) establish an X3DH key agreement via an out-of-band intro bundle, then exchange double-ratchet-encrypted messages routed through 3-hop Sphinx onion routes with per-hop RLN proof generation and verification. Node 0 mounts the rln_gifter service; nodes 1-3 and both chat clients register RLN memberships on-chain via the gifter protocol. The sender publishes via `lightpushPublish(mixify=true)`, the mix exit node verifies the RLN proof before fanning out via gossipsub relay, and the receiver consumes the message via a Waku filter subscription.
+
+## macOS
+
+**Prereqs:** nix (with flakes), Docker, cargo-risczero, SSH access to GitHub.
+
+```bash
+git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
+cd logos-chat && bash simulations/mix_lez_chat/setup_and_run.sh
+```
+
+First run: ~15-25 min. Re-runs: `bash simulations/mix_lez_chat/run_simulation.sh --fresh` (~5 min).
+
+## Linux (native)
+
+**Prereqs:** nix (with flakes), Docker, cargo-risczero, SSH access to GitHub.
+
+```bash
+git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
+cd logos-chat && bash simulations/mix_lez_chat/setup_and_run.sh
+```
+
+Same as macOS. On x86_64 Linux this should work out of the box. On aarch64 Linux, guest zkVM binaries must be pre-built on another platform (rzup doesn't support aarch64-linux) and the wallet module nix build needs `RISC0_SKIP_BUILD_KERNELS=1`.
+
+## Linux (via Docker)
+
+**Prereqs:** Docker with 24GB RAM allocated.
+
+```bash
+git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
+cd logos-chat && bash scripts/run_in_docker.sh
+```
+
+The pre-built image (`ghcr.io/adklempner/logos-chat-sim`) is pulled automatically (~8.5GB download). Guest zkVM binaries must exist on the host from a previous macOS/x86_64 build, or set `GUEST_BINARIES_DIR`.
+
+Each sim run: ~10 min (clone + sequencer build + sim). To force a local image rebuild: `REBUILD_IMAGE=1 bash scripts/run_in_docker.sh`.
+
+## Pass criteria
+
+**ALL 15 CHECKS PASSED** — 4 mix nodes mounted, gifter service, LEZ RLN active, sender+receiver initialized/started/mix-mounted, intro bundle created, messages sent and received.
 
 ## Architecture
 
@@ -18,28 +57,9 @@ logoscore (per mix node)                    logoscore (per chat client)
 
 Node 0 runs the RLN gifter service. Nodes 1-3 register via gifter on startup. Chat clients also register via gifter when `startChat()` runs.
 
-## Quick start
-
-**Prereqs:** nix (with flakes), Docker (for guest zkVM binaries), cargo-risczero, SSH access to GitHub.
-
-**Run from scratch:**
-
-```bash
-git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
-cd logos-chat && bash simulations/mix_lez_chat/setup_and_run.sh
-```
-
-**Re-run (after initial build):**
-
-```bash
-bash simulations/mix_lez_chat/run_simulation.sh --fresh
-```
-
-Pass = **ALL 15 CHECKS PASSED**.
-
 ## Configuration
 
-Override via environment variables:
+Override defaults via environment:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -73,21 +93,12 @@ When `--fresh` is passed:
 
 Without `--fresh`, reuses existing sequencer if port 3040 is already bound.
 
-## Checks (15 total)
-
-| Category | Check | What it verifies |
-|---|---|---|
-| Mix nodes (4) | Node N mounted mix | Mix protocol handler registered |
-| RLN gifter | Node 0 gifter service mounted | `/logos/rln-gifter/1.0.0` protocol handler |
-| LEZ RLN | LEZ root polling active | Nodes polling valid Merkle roots from LEZ |
-| Chat module (4) | Receiver/Sender initialized | `chatInitResult` event fired |
-| | Receiver/Sender started | `Waku client started` + `chatStartResult` |
-| | Receiver/Sender mounted mix+LEZ | Mix protocol + LEZ callbacks wired |
-| | Receiver created intro bundle | X3DH pre-key bundle generated |
-| Message exchange (2) | Sender sent message | `chatNewPrivateConversationResult` |
-| | Receiver received message | `chatNewMessage` via filter subscription |
-
 ## Troubleshooting
+
+**Re-run with fresh state:**
+```bash
+bash simulations/mix_lez_chat/run_simulation.sh --fresh
+```
 
 **"Sequencer failed to start"** — port 3040 already in use:
 ```bash
@@ -107,10 +118,7 @@ rm -f /tmp/logos_*
 bash simulations/mix_lez_chat/run_simulation.sh --fresh
 ```
 
-**"FAIL: Receiver received message (0)"** — timing issue, try re-running:
-```bash
-bash simulations/mix_lez_chat/run_simulation.sh --fresh
-```
+Docker logs are rescued to `./docker-sim-logs/` on failure.
 
 ## Adapting for other LEZ programs
 
@@ -131,7 +139,7 @@ The chat_module sender/receiver instances (phase 5 of run_simulation.sh). Your m
    - Methods exposed via `LOGOS_METHOD` for logoscore `-c` invocation
 2. **A shared library** with your program logic (like `liblogoschat.so`)
 3. **RLN integration** — wire `setRlnConfig` to pass RLN credentials from the C++ plugin to your library
-4. **EVENT: stderr fallback** — on Linux, Qt signal forwarding from plugin to logoscore doesn't work across the FFI thread boundary. Write event data to stderr in `EVENT:name:data` format for cross-platform reliability.
+4. **EVENT: stderr fallback** — on Linux, Qt signal forwarding from plugin to logoscore doesn't work across the FFI thread boundary. Write event data to stderr in `EVENT:name:data` format (gated by `LOGOS_EVENT_STDERR` env var) for cross-platform reliability.
 
 ### How to stage your module
 
@@ -160,3 +168,4 @@ All logs in `simulations/mix_lez_chat/.sim_state/`:
 - `node0.log` – `node3.log` — mix relay nodes
 - `chat_receiver.log` — receiver chat module
 - `chat_sender.log` — sender chat module
+- `sequencer.log` — LEZ sequencer
