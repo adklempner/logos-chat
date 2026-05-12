@@ -82,7 +82,11 @@ cd logos-chat
 # Init submodules (lssa needs full history for auto-sync)
 git submodule update --init --depth 1
 (cd vendor/logos-lez-rln && git submodule update --init lssa && \
-    git submodule update --init --depth 1 logos-delivery logos-delivery-module logos-execution-zone-module)
+    git submodule update --init --depth 1 logos-delivery logos-delivery-module logos-execution-zone-module && \
+    git checkout -- . && \
+    for d in lssa logos-delivery logos-delivery-module logos-execution-zone-module; do \
+        (cd "$d" && git checkout -- .); \
+    done)
 (cd vendor/logos-lez-rln/logos-delivery-module && git submodule update --init --depth 1 vendor/logos-delivery)
 
 # Symlink pre-built nix modules from image
