@@ -65,6 +65,10 @@ fi
 log "Initializing nested submodules in vendor/logos-lez-rln..."
 (cd vendor/logos-lez-rln && \
     git submodule update --init lssa logos-delivery logos-delivery-module logos-execution-zone-module && \
+    git checkout -- . && \
+    for d in lssa logos-delivery logos-delivery-module logos-execution-zone-module; do \
+        (cd "$d" && git checkout -- .); \
+    done && \
     cd logos-delivery-module && git submodule update --init vendor/logos-delivery)
 if [ -d "${GUEST_TMP:-}" ]; then
     mkdir -p "$GUEST_DIR"
