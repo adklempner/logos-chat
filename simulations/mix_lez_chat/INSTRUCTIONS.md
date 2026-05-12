@@ -43,6 +43,10 @@ Each sim run: ~10 min (clone + sequencer build + sim). To force a local image re
 
 **ALL 15 CHECKS PASSED** — 4 mix nodes mounted, gifter service, LEZ RLN active, sender+receiver initialized/started/mix-mounted, intro bundle created, messages sent and received.
 
+## LEZ backend
+
+The simulation runs against the SPEL framework (logos-lez-rln `sim-on-spel` branch, based on `feat/spel`). The on-chain RLN programs use SPEL's `#[lez_program]` macro with 32-byte tree IDs, Borsh-encoded state, and PDA-based account derivation via `combine_seeds`.
+
 ## Configuration
 
 ```bash
@@ -61,6 +65,7 @@ bash simulations/mix_lez_chat/run_simulation.sh --fresh
 Wallet/sequencer errors:
 ```bash
 rm -f vendor/logos-lez-rln/dev/wallet_config.json vendor/logos-lez-rln/dev/storage.json
+rm -f ~/.logos-lez-rln/payment_account_*.txt
 ```
 
 Guest binary errors after updating submodules:
