@@ -141,7 +141,7 @@ else
         [ -z "$LSSA_REV" ] && die "Could not extract lssa rev from lez-rln/Cargo.toml"
         if ! git -C "$LEZ_RLN_DIR/lssa" merge-base --is-ancestor "$LSSA_REV" HEAD 2>/dev/null; then
             log "  Pinning lssa to $LSSA_REV..."
-            (cd "$LEZ_RLN_DIR/lssa" && git fetch --quiet origin && git checkout --quiet "$LSSA_REV") \
+            (cd "$LEZ_RLN_DIR/lssa" && git fetch --quiet --tags origin && git checkout --quiet "$LSSA_REV") \
                 || die "lssa checkout $LSSA_REV failed"
         fi
         log "  Building sequencer..."
