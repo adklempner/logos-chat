@@ -1,8 +1,10 @@
-#include <QGuiApplication>
+#include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QTimer>
+#include <QThread>
 #include "MonitorBackend.h"
 
 #ifdef ENABLE_HOST_MODE
@@ -11,7 +13,7 @@
 
 int main(int argc, char* argv[]) {
     qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     app.setApplicationName("sim-monitor");
 
     QCommandLineParser parser;
@@ -41,11 +43,12 @@ int main(int argc, char* argv[]) {
         QString userDir = qEnvironmentVariable("LOGOS_USER_DIR");
         if (userDir.isEmpty()) {
             qWarning() << "LOGOS_USER_DIR not set — chat host mode needs staged modules";
+            hostMode = false;
         } else {
             QString modulesDir = QDir(userDir).filePath("modules");
             QString dataDir = QDir(userDir).filePath("module_data");
             QDir().mkpath(dataDir);
-
+            qDebug() << "Loading chat modules from" << modulesDir;
             if (!chatHost->loadModules(modulesDir, dataDir)) {
                 qWarning() << "Failed to load chat modules — host mode disabled";
                 hostMode = false;

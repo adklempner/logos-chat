@@ -7,7 +7,20 @@
 #include <QDebug>
 
 #ifdef ENABLE_HOST_MODE
-#include <logos_core.h>
+// Use basecamp's exact extern "C" declarations — the logos_core.h header from
+// logos-liblogos may declare single-arg logos_core_load_module which mismatches
+// the actual 2-arg export in liblogos_core.dylib.
+extern "C" {
+    void logos_core_add_modules_dir(const char* modules_dir);
+    void logos_core_set_persistence_base_path(const char* path);
+    void logos_core_start();
+    void logos_core_cleanup();
+    char** logos_core_get_loaded_modules();
+    int logos_core_load_module(const char* module_name, bool with_dependencies);
+    char* logos_core_process_module(const char* module_path);
+    char* logos_core_get_module_stats();
+    void logos_core_process_events();
+}
 #include <logos_api.h>
 #include <logos_api_client.h>
 #endif
@@ -25,9 +38,13 @@ ChatHost::~ChatHost() {
 
 bool ChatHost::loadModules(const QString& modulesDir, const QString& dataDir) {
 #ifdef ENABLE_HOST_MODE
+    qDebug() << "ChatHost: add_modules_dir" << modulesDir;
     logos_core_add_modules_dir(modulesDir.toUtf8().constData());
+    qDebug() << "ChatHost: set_persistence_base_path" << dataDir;
     logos_core_set_persistence_base_path(dataDir.toUtf8().constData());
+    qDebug() << "ChatHost: calling logos_core_start()...";
     logos_core_start();
+    qDebug() << "ChatHost: logos_core_start() returned";
 
     const char* modules[] = {
         "capability_module",
@@ -37,14 +54,13 @@ bool ChatHost::loadModules(const QString& modulesDir, const QString& dataDir) {
     };
 
     for (const char* mod : modules) {
-        emit logLine(QStringLiteral("Loading module: %1").arg(QString::fromUtf8(mod)));
-        int rc = logos_core_load_module_with_dependencies(mod);
+        qDebug() << "ChatHost: loading" << mod;
+        int rc = logos_core_load_module(mod, true);
+        qDebug() << "ChatHost: load_module" << mod << "rc=" << rc;
         if (rc != 1) {
-            emit logLine(QStringLiteral("ERROR: Failed to load module: %1 (rc=%2)")
-                .arg(QString::fromUtf8(mod)).arg(rc));
+            qDebug() << "ChatHost: FAILED to load" << mod << "rc=" << rc;
             return false;
         }
-        emit logLine(QStringLiteral("Loaded: %1").arg(QString::fromUtf8(mod)));
     }
 
     m_modulesLoaded = true;
