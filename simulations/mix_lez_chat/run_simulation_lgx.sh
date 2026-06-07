@@ -115,7 +115,7 @@ start_logoscore_instance() {
     # QProcess sanitization strips DYLD_*). Per-module pairing happens in the
     # caller via the DYLD_PRELOAD_LIBS env. When unset, no injection happens and
     # modules without flat-namespace deps work fine.
-    local -a daemon_env=(HOME="$HOME" PATH="$PATH" LOGOSCORE_CONFIG_DIR="$cfg_dir")
+    local -a daemon_env=(HOME="$HOME" PATH="$PATH" LOGOSCORE_CONFIG_DIR="$cfg_dir" RUST_BACKTRACE=full)
     [ -n "${DYLD_PRELOAD_LIBS:-}" ] && daemon_env+=(DYLD_INSERT_LIBRARIES="$DYLD_PRELOAD_LIBS")
     # Truncate first via `:>`, then daemon AND client both append via `>>`.
     # Critical: using bash `>` for the daemon leaves its fd in O_WRONLY (no
@@ -376,7 +376,7 @@ WALLET_HOME_SUBDIR=$([ "$SIM_NETWORK" = testnet ] && echo testnet || echo dev)
 export NSSA_WALLET_HOME_DIR="$LEZ_RLN_DIR/$WALLET_HOME_SUBDIR"
 export WALLET_CONFIG="$NSSA_WALLET_HOME_DIR/wallet_config.json"
 export WALLET_STORAGE="$NSSA_WALLET_HOME_DIR/storage.json"
-TREE_ID_HEX="000102030405060708090a0b0c0d0e0f10111213141516171a05100200000001"
+TREE_ID_HEX="000102030405060708090a0b0c0d0e0f1011121314151617a0cba6e85ca1e26b"
 GIFTER_ACCOUNT_FILE="$HOME/.logos-lez-rln/payment_account_${TREE_ID_HEX}.txt"
 
 # Local: clean wallet each run so run_setup re-deploys.
@@ -604,6 +604,10 @@ EOF
         cp "$DELIVERY_PLUGIN_OVERRIDE" "$MDIR/delivery_module/delivery_module_plugin.dylib"
         codesign --force --sign - "$MDIR/delivery_module/delivery_module_plugin.dylib" 2>/dev/null || true
     fi
+    if [ -n "${RLN_PLUGIN_OVERRIDE:-}" ] && [ -f "$RLN_PLUGIN_OVERRIDE" ]; then
+        cp "$RLN_PLUGIN_OVERRIDE" "$MDIR/liblogos_rln_module/liblogos_rln_module.dylib"
+        codesign --force --sign - "$MDIR/liblogos_rln_module/liblogos_rln_module.dylib" 2>/dev/null || true
+    fi
 
     log "  Starting node $i (port $TCP_PORT)..."
     # Node 0 is the gifter — it must self-register on-chain (paying its own
@@ -665,13 +669,35 @@ EOF
     # hop fails "Plugin not ready". setRlnConfig also can't be issued after
     # start() because start()'s async backend saturates Qt indefinitely,
     # blocking all subsequent RPCs to delivery_module.
-    # ALL mix nodes get pre-start setRlnConfig (placeholder leaf=0) so the
-    # C++ rln_fetcher trampoline is installed AND the gifter coroutine on
-    # node 0 unblocks its waitForRlnConfig loop. Each node's real leaf gets
-    # overwritten when on-chain registration completes. Previously node 0
-    # was excluded, but on testnet that left the gifter coroutine waiting
-    # forever → all gifter requests rejected with "RLN config not set".
-    PRE_START_CALLS=("delivery_module.setRlnConfig($CONFIG_ACCOUNT,0)")
+    # Non-gifter mix nodes get pre-start setRlnConfig (placeholder leaf=0)
+    # so the C++ rln_fetcher trampoline is installed before start (Nim's
+    # internal gifter-client registration during startNode() later
+    # overwrites the placeholder leaf with the real on-chain leaf).
+    #
+    # NODE 0 (gifter) is EXCLUDED again. Setting setRlnConfig with leaf=0
+    # before start triggers an ordering bug: somewhere in mix.start()'s
+    # spam-protection init path, setRlnIdentity gets called and reads the
+    # placeholder leaf=0; setRlnIdentity at logos_core_client.nim:137-138
+    # does `if leafIdx >= 0: gmRef.membershipIndex = some(MembershipIndex(leafIdx))`
+    # — the `>= 0` (vs `> 0`) check means leaf=0 looks like a valid leaf
+    # and the gifter's lezGm.membershipIndex flips to Some(0). The gifter
+    # self-register block at node_factory.nim:738 then SKIPS the asyncSpawn
+    # (gated on `if lezGm.membershipIndex.isNone`), so the gifter never
+    # self-registers on-chain. Symptom: gifter mounted, "RLN config set
+    # (leaf=0)" log appears, but no "Self-registering gifter as mix relay".
+    # All inbound chat-client gifter dials get "RLN config not set on
+    # gifter node" because gifter has no real on-chain credentials.
+    #
+    # Local path: selfRegisterRlnJson succeeds within the 180s sync RPC
+    # window (timeout bumped from 20s in delivery_module_plugin.cpp:702 so
+    # this also works on testnet). selfRegisterRln sequences setRlnConfig
+    # → setRlnIdentity with the REAL leaf, so the asyncSpawn block is
+    # skipped intentionally (gifter is already registered).
+    if [ "$i" -ne 0 ]; then
+        PRE_START_CALLS=("delivery_module.setRlnConfig($CONFIG_ACCOUNT,0)")
+    else
+        PRE_START_CALLS=()
+    fi
     DYLD_PRELOAD_LIBS="$DELIVERY_EXTRA_LIB" \
     start_logoscore_instance "$LOG_FILE" "$MDIR" "$LOAD_ORDER" \
         "$WALLET_CALL" \
@@ -749,6 +775,10 @@ stage_chat_module() {
     install_lgx "$MDIR" "$RLN_LGX"
     install_lgx "$MDIR" "$CHAT_LGX"
     install_extra_lib "$MDIR" chat_module "$CHAT_EXTRA_LIB"
+    if [ -n "${RLN_PLUGIN_OVERRIDE:-}" ] && [ -f "$RLN_PLUGIN_OVERRIDE" ]; then
+        cp "$RLN_PLUGIN_OVERRIDE" "$MDIR/liblogos_rln_module/liblogos_rln_module.dylib"
+        codesign --force --sign - "$MDIR/liblogos_rln_module/liblogos_rln_module.dylib" 2>/dev/null || true
+    fi
     # Optional plugin override: if CHAT_PLUGIN_OVERRIDE is set, replace the
     # chat_module_plugin.dylib that came out of the pinned CHAT_LGX with a
     # locally-rebuilt one. Used to ship the onInit auto-wire patch that sets
