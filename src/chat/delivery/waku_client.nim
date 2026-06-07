@@ -142,10 +142,15 @@ proc sendBytes*(client: WakuClient, contentTopic: string,
       info "Waiting for mix pool before sending..."
       await sleepAsync(2.seconds)
 
-    # Wait for RLN spam protection to be ready (roots + proofs fetched from LEZ)
+    # Wait for RLN spam protection to be ready (roots + proofs fetched from LEZ).
+    # isReady requires gm.cachedProof which only lands after on-chain confirmation
+    # of the gifter-granted membership. Local sequencer confirmation: ~2-3 min;
+    # testnet: 5-30 min. Old 90s ceiling falls through to publish-anyway with
+    # an unready plugin → "Failed to generate spam protection proof". Extend to
+    # ~10 min so confirmation has time to land before we give up.
     if not client.node.wakuMix.isNil:
       var attempts = 0
-      while not client.node.wakuMix.mixRlnSpamProtection.isReady() and attempts < 45:
+      while not client.node.wakuMix.mixRlnSpamProtection.isReady() and attempts < 300:
         if attempts mod 5 == 0:
           info "Waiting for RLN spam protection readiness...", attempt = attempts
         await sleepAsync(2.seconds)
@@ -157,12 +162,17 @@ proc sendBytes*(client: WakuClient, contentTopic: string,
           let pollMs = lezGm.getPollInterval().milliseconds
           let stableMs = max(pollMs * 2, 5000)
           let probeMs = max(pollMs div 4, 1000)
-          # The gifter serializes registrations through a worker; on slow
-          # chains the chat sender may sit at the tail of a queue of up to
-          # ~6 other registrations, each waiting up to confirmDeadlineMs
-          # (300s) for chain commit. Budget enough headroom that we don't
-          # publish against an un-corrected optimistic leaf.
-          let deadlineMs = 1_500_000
+          # Wait briefly for the gifter-client's watcher to surface an
+          # authoritative leaf, but don't hold the publish hostage if it
+          # doesn't land — on testnet the gifter's confirmation polling
+          # may time out long before any of these waits could matter, and
+          # holding sendBytes for 25 min beats the sim's delivery-check
+          # window by ~20 min, so the actual publish never happens during
+          # the measurement and the receiver counts 0 messages.
+          # 30s gives local (sub-second confirms) full headroom while
+          # making the testnet "watcher already gave up" case fall through
+          # to "publishing anyway" quickly.
+          let deadlineMs = 30_000
 
           # Phase 1: wait for the watcher to confirm our registration on
           # chain plus a cushion of 2 poll intervals, so peers have had
@@ -222,12 +232,26 @@ proc sendBytes*(client: WakuClient, contentTopic: string,
 
   if client.cfg.mixEnabled and client.mixReady:
     info "Sending via mix (lightpushPublish)", contentTopic = contentTopic, mixPoolSize = client.node.getMixNodePoolSize()
+    # PHASE-A INSTRUMENTATION: log right before invoking lightpushPublish so
+    # we can correlate the chat-client send attempt with downstream mix-node
+    # incoming-sphinx logs. Identifies whether the chat client got past
+    # peer selection + sphinx wrap.
+    info "[PHASE-A] mix-send: about to call lightpushPublish",
+      msgLen = msg.payload.len, pubsubTopic = client.cfg.pubsubTopic
     let publishFut = client.node.lightpushPublish(
       some(PubsubTopic(client.cfg.pubsubTopic)), msg, none(RemotePeerInfo), mixify = true
     )
-    if not await publishFut.withTimeout(15.seconds):
+    # PHASE-B+C MITIGATION: bump the SURB-reply timeout from 15s → 60s so
+    # slower machines have headroom for the round-trip back through the
+    # mix path. Downgrade the timeout from `error` to `warn` because the
+    # forward delivery is independent of the SURB reply — phase-A logs
+    # confirmed that on attempts where mix-exit fires + receiver gets
+    # "Received message push" (delivery succeeds), the sender still
+    # logs SURB-reply timeout. Treating that as `error` makes callers
+    # incorrectly mark conversations failed when the message went through.
+    if not await publishFut.withTimeout(60.seconds):
       await publishFut.cancelAndWait()
-      error "Mix lightpush timed out (no SURB reply within deadline)"
+      warn "Mix lightpush: no SURB reply within 60s; message may have been delivered (forward path is independent of SURB reply)"
     else:
       let res = publishFut.read()
       if res.isErr:
@@ -307,30 +331,28 @@ proc getMixPoolSize*(client: WakuClient): int =
     return client.node.getMixNodePoolSize()
   return 0
 
+proc subscribeAllStaticPeers(client: WakuClient) {.async.} =
+  ## Issues a fresh filter subscribe to every static peer for both
+  ## FilterContentTopic and LibchatDeliveryAddress. Idempotent on the relay
+  ## side. Called from start() (so the receiver is ready before any sender
+  ## activity) and from taskKeepAlive (so subscriptions don't silently lapse
+  ## on long-running clients — ping-then-subscribe was unreliable because
+  ## a successful ping doesn't guarantee the content-topic subscription
+  ## state is still live on the relay).
+  for peerInfo in client.staticPeerList:
+    let subscribeRes = await client.node.wakuFilterClient.subscribe(
+      peerInfo, client.cfg.pubsubTopic, @[FilterContentTopic, LibchatDeliveryAddress]
+    )
+    if subscribeRes.isErr():
+      warn "filter subscribe failed",
+        peerId = $peerInfo.peerId, err = subscribeRes.error
+    else:
+      debug "filter subscribe ok", peerId = $peerInfo.peerId
+
 proc taskKeepAlive(client: WakuClient) {.async.} =
   while true:
-    for peerInfo in client.staticPeerList:
-      debug "maintaining subscription", peerId = $peerInfo.peerId
-      # First use filter-ping to check if we have an active subscription
-      let pingRes = await client.node.wakuFilterClient.ping(peerInfo)
-      if pingRes.isErr():
-        # No subscription found. Let's subscribe.
-        warn "no subscription found. Sending subscribe request"
-
-        # TODO: Use filter. Removing this stops relay from working so keeping for now
-        let subscribeRes = await client.node.wakuFilterClient.subscribe(
-          peerInfo, client.cfg.pubsubTopic, @[FilterContentTopic, LibchatDeliveryAddress]
-        )
-
-        if subscribeRes.isErr():
-          error "subscribe request failed. Skipping.", err = subscribeRes.error
-          continue
-        else:
-          debug "subscribe request successful."
-      else:
-        debug "subscription found."
-
     await sleepAsync(60.seconds) # Subscription maintenance interval
+    await client.subscribeAllStaticPeers()
 
 proc getConnectedPeerCount*(client: WakuClient): int =
   var count = 0
@@ -481,6 +503,11 @@ proc start*(client: WakuClient) {.async.} =
           watcherLezGm.markMembershipConfirmed(),
       )
 
+  # Subscribe to every static peer SYNCHRONOUSLY before start() returns so
+  # the receiver has live content-topic subscriptions in place before any
+  # sender mix-publish fires. taskKeepAlive then re-subscribes every 60s
+  # to defend against silent server-side subscription expiry.
+  await client.subscribeAllStaticPeers()
   asyncSpawn taskKeepAlive(client)
 
   if client.cfg.mixEnabled and not client.node.wakuMix.isNil:
