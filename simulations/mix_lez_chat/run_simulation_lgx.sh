@@ -244,7 +244,7 @@ CLUSTER_ID=${SIM_CLUSTER_ID:-99}
 NUM_SHARDS=1
 CONTENT_TOPIC="/logos-chat/1/mix-test/proto"
 TEST_MESSAGE_PREFIX="chatmixtest"
-LOG_LEVEL=${SIM_LOG_LEVEL:-INFO}
+LOG_LEVEL=${SIM_LOG_LEVEL:-DEBUG}
 CHAT_RECV_PORT=${SIM_CHAT_RECV_PORT:-60010}
 CHAT_RECV2_PORT=${SIM_CHAT_RECV2_PORT:-60012}
 CHAT_SEND_PORT=${SIM_CHAT_SEND_PORT:-60011}
@@ -462,11 +462,12 @@ LOGOSCORE="${LOGOSCORE:-$(nix build github:logos-co/logos-logoscore-cli --no-lin
 # after the first run. The new logoscore-cli discovers modules by reading
 # manifest.json from each module subdir, not raw .dylib filenames.
 log "  Bundling .lgx packages..."
+# Optional `extra_args...` flow through to nix bundle (e.g. --override-input).
 lgx_from() {
-    local dir="$1" attr="$2"
+    local dir="$1" attr="$2"; shift 2
     local out_link store_path lgx
     out_link=$(mktemp -d)/result
-    (cd "$dir" && nix bundle --bundler github:logos-co/nix-bundle-lgx --out-link "$out_link" ".#$attr" >/dev/null 2>&1) \
+    (cd "$dir" && nix bundle --bundler github:logos-co/nix-bundle-lgx "$@" --out-link "$out_link" ".#$attr" >/dev/null 2>&1) \
         || die "nix bundle failed in $dir for $attr"
     store_path=$(readlink "$out_link")
     lgx=$(find "$store_path" -maxdepth 1 -name "*.lgx" | head -1)
@@ -478,7 +479,24 @@ lgx_from() {
 # /nix/store/<hash>/<name>.lgx, useful when an upstream cargo/git-source fetch
 # fails (e.g. crates.io 403s on librln-mix vendor) but the cached .lgx is
 # still good.
-WALLET_LGX=${WALLET_LGX:-$(lgx_from "$LEZ_RLN_DIR" "wallet-module")}
+#
+# wallet-module: upstream pin `logos-blockchain/logos-execution-zone-module @
+# 5d42559` lacks `send_public_transaction` Q_INVOKABLE — register_member's
+# tx-submit path needs that method or selfRegisterRln fails immediately with
+# "register_member failed" → "RLN config not set on gifter node" cascade.
+# Override to the local sibling source (commit 478b7bc) which declares it.
+#
+# Plus a nested override to local lssa so the wallet's Rust `SequencerClient`
+# carries `request_timeout(120s)`. Without it, a stuck testnet HTTP response
+# blocks block_on() in the FFI synchronously → freezes the wallet plugin's
+# Qt thread → cascades up through liblogos_rln_module and delivery_module's
+# rln_fetcher trampoline → chronos event loop wedges → libp2p stops accepting
+# gifter codec dials. Net symptom on testnet was "node 0 goes silent ~1s
+# after its first send_public_transaction, every chat client gets gifter
+# dial failed". Five-line fix in lssa/wallet/src/lib.rs.
+WALLET_LGX=${WALLET_LGX:-$(lgx_from "$LEZ_RLN_DIR" "wallet-module" \
+    --override-input logos-wallet-module "path:$LEZ_RLN_DIR/logos-execution-zone-module" \
+    --override-input logos-wallet-module/logos-execution-zone "path:$LEZ_RLN_DIR/lssa")}
 RLN_LGX=${RLN_LGX:-$(lgx_from "$LEZ_RLN_DIR" "logos-rln-module")}
 DELIVERY_LGX=${DELIVERY_LGX:-$(lgx_from "$DELIVERY_MODULE_DIR" "lib")}
 CHAT_LGX=${CHAT_LGX:-$(lgx_from "$CHAT_MODULE_DIR" "lib")}
@@ -941,6 +959,50 @@ EOF
     log "  Receiver2 joined after $((SECONDS - R2_JOIN_T0))s"
 fi
 
+# --- Demo setup short-circuit ---
+# SIM_SETUP_ONLY=1: skip the sender + verification phases, dump enough env
+# for demo_step.sh to launch a fresh sender against this live infra, then
+# block on the sequencer PID. Cleanup happens via the existing EXIT trap.
+if [ "${SIM_SETUP_ONLY:-0}" = "1" ]; then
+    DEMO_ENV="$STATE_DIR/demo_state.env"
+    {
+        echo "STATE_DIR=$STATE_DIR"
+        echo "BOOTSTRAP_PEER=$BOOTSTRAP_PEER"
+        echo "CLUSTER_ID=$CLUSTER_ID"
+        echo "CHAT_SEND_PORT=$CHAT_SEND_PORT"
+        echo "MIXNODE_LIST='$MIXNODE_LIST'"
+        echo "CHAT_STATIC_PEERS='$CHAT_STATIC_PEERS'"
+        echo "INTRO_BUNDLE=$INTRO_BUNDLE"
+        echo "KEY_SENDER=$KEY_SENDER"
+        echo "WALLET_CALL='$WALLET_CALL'"
+        echo "CHAT_LOAD_ORDER=$CHAT_LOAD_ORDER"
+        echo "CHAT_EXTRA_LIB=$CHAT_EXTRA_LIB"
+        echo "DELIVERY_EXTRA_LIB=$DELIVERY_EXTRA_LIB"
+        echo "RECEIVER_LOG=$RECEIVER_LOG"
+        echo "RECEIVER_PID=$RECEIVER_PID"
+        echo "SEQUENCER_PID=${SEQUENCER_PID:-}"
+        echo "NUM_NODES=$NUM_NODES"
+    } > "$DEMO_ENV"
+
+    echo
+    echo "======================================================================"
+    echo "  Demo setup complete. Infra is live and waiting."
+    echo "======================================================================"
+    echo "  Sequencer PID:  ${SEQUENCER_PID:-?}"
+    echo "  Gifter node 0:  ready"
+    echo "  Relay nodes:    1..$((NUM_NODES - 1))"
+    echo "  Receiver PID:   $RECEIVER_PID"
+    echo "  Intro bundle:   ${INTRO_BUNDLE:0:48}..."
+    echo
+    echo "  State written:  $DEMO_ENV"
+    echo "  → In another shell, run:"
+    echo "       bash $SCRIPT_DIR/demo_step.sh"
+    echo "  Ctrl-C here to tear down."
+    echo "======================================================================"
+    # Block forever; EXIT trap cleans up on Ctrl-C.
+    while sleep 3600; do :; done
+fi
+
 # --- Sender ---
 # Interactive infra-only mode (SIM_INFRA_ONLY=1): skip headless sender, print
 # the env vars + intro bundle so a human-driven GUI client (logos-chat-ui-app)
@@ -1308,6 +1370,47 @@ echo ""
 echo "[6/6] Verification"; echo ""
 PASS=0; FAIL=0
 check() { local c=$1 d=$2; if eval "$c"; then echo "  PASS: $d"; PASS=$((PASS+1)); else echo "  FAIL: $d"; FAIL=$((FAIL+1)); fi; }
+
+# Demo mode: replace the full 6/6 check with the three RLN-gifter-protocol
+# markers the demo cares about (gifter request received, membership granted,
+# proof verified by a mix node). Skips the receive-side delivery checks that
+# depend on end-to-end mix forward delivery (orthogonal to the gifter
+# protocol itself working).
+if [ "${SIM_DEMO_MODE:-0}" = "1" ]; then
+    echo "  --- RLN gifter protocol demo ---"
+    GIFTER_REQ=$(sed 's/\x1b\[[0-9;]*m//g' "$STATE_DIR/node0.log" 2>/dev/null \
+        | grep -c "handling RLN gifter request" || true)
+    check "[ ${GIFTER_REQ:-0} -ge 1 ]" "(1) Gifter service received request ($GIFTER_REQ)"
+
+    SEND_MEMB=$(sed 's/\x1b\[[0-9;]*m//g' "$SENDER_LOG" 2>/dev/null \
+        | grep -c "RLN membership granted\|Registered via RLN gifter" || true)
+    check "[ ${SEND_MEMB:-0} -ge 1 ]" "(2) Sender received valid RLN membership ($SEND_MEMB)"
+
+    # RLN proofs are generated by each mix node as it wraps/forwards the
+    # sphinx packet (NOT by the chat sender). Count generations across all
+    # mix nodes — each downstream verification implies a prior generation.
+    PROOF_GEN=0
+    for i in $(seq 0 $((NUM_NODES - 1))); do
+        N=$(sed 's/\x1b\[[0-9;]*m//g' "$STATE_DIR/node${i}.log" 2>/dev/null \
+            | grep -c "Generated RLN proof successfully" || true)
+        PROOF_GEN=$((PROOF_GEN + ${N:-0}))
+    done
+    check "[ $PROOF_GEN -ge 1 ]" "(3a) Mix nodes generated RLN proofs ($PROOF_GEN total)"
+
+    PROOF_VERIFIED=0
+    for i in $(seq 0 $((NUM_NODES - 1))); do
+        N=$(sed 's/\x1b\[[0-9;]*m//g' "$STATE_DIR/node${i}.log" 2>/dev/null \
+            | grep -c "Spam protection proof verified successfully" || true)
+        PROOF_VERIFIED=$((PROOF_VERIFIED + ${N:-0}))
+    done
+    check "[ $PROOF_VERIFIED -ge 1 ]" "(3b) Proof verified by another mix node ($PROOF_VERIFIED total)"
+
+    echo ""; echo "  =========================================="
+    if [ "$FAIL" -eq 0 ]; then echo "  DEMO PASS: all $PASS markers fired"; EXIT_CODE=0
+    else echo "  DEMO FAIL: $FAIL/$((PASS+FAIL)) markers missing"; EXIT_CODE=1; fi
+    echo "  =========================================="
+    exit $EXIT_CODE
+fi
 
 echo "  --- logos-core mix nodes ---"
 for i in $(seq 0 $((NUM_NODES - 1))); do

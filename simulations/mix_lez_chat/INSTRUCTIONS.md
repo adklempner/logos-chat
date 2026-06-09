@@ -55,6 +55,46 @@ SIM_NETWORK=testnet SIM_SLIM=1 bash simulations/mix_lez_chat/run_simulation.sh -
 
 Testnet runs are non-deterministic — gifter slot allocation, block confirmation, and mix circuit timing all vary per run. See `cleanup/FRESH_CLONE_RESULTS.md` for the failure modes the defensive layers catch (self-verify on bad proofs, libp2p-status-codec watcher correcting optimistic leaf indices) and the silent-drop gap that's still open.
 
+## Running the GUI chat client (logos-chat-ui-app) against the sim
+
+The headless sim normally drives both sender and receiver. For demos / interactive testing you can keep the sim infra (sequencer + 4 mix nodes + gifter + receiver) running headless and have the GUI act as the sender.
+
+### One-shot setup (per shell)
+
+```bash
+# Terminal 1 — sim infra (stays in foreground; Ctrl-C cleans up)
+SIM_INFRA_ONLY=1 bash simulations/mix_lez_chat/run_simulation_lgx.sh
+# … or for testnet:
+SIM_NETWORK=testnet SIM_INFRA_ONLY=1 bash simulations/mix_lez_chat/run_simulation_lgx.sh
+```
+
+Wait for the green banner. It prints:
+- the `export CHAT_*` env vars the GUI needs (cluster id, port, gifter peer, auth key, mix nodes, static peers),
+- the receiver's intro bundle (`logos_chatintro_1_…`) to paste into the GUI.
+
+The sim then polls the receiver log for inbound `chatNewMessage` events and prints one line per delivered message, so you have live feedback while you drive the GUI.
+
+### Staging the GUI
+
+```bash
+# Terminal 2 — stage a writable copy of logos-chat-ui-app with the right modules
+bash simulations/mix_lez_chat/setup_chat_ui_app.sh
+```
+
+`setup_chat_ui_app.sh` now auto-resolves the chat-ui-app, wallet, and RLN `.lgx` paths. It builds the wallet `.lgx` with the SAME `--override-input` chain as the sim, so the GUI gets the `request_timeout(120s)` patch in the wallet's Rust HTTP client — without it, `send_public_transaction` to a slow testnet hangs the wallet's Qt thread on the first call (and your GUI silently stops responding). Set `APP_NIX`, `WALLET_LGX`, or `RLN_LGX` to skip the auto-resolve.
+
+### Launching the GUI
+
+Paste the `export CHAT_*` block printed by the sim into terminal 2, then:
+
+```bash
+/tmp/chat_ui_app_staged/bin/logos-chat-ui-app
+```
+
+In the GUI: Ctrl+I (Initialize Chat) → Ctrl+S (Start Chat) → File → New Private Conversation → paste the intro bundle the sim printed → type a message → send. Terminal 1 will print `RECEIVED MESSAGE #1` when the receiver picks it up.
+
+For testnet on a fresh wallet: see "If it fails → Testnet wallet drift" below — same wipe applies; the sim's `[2/6] Deploying programs` will run `run_setup` and fund a new payment account.
+
 ## Pass criteria
 
 **ALL 15 CHECKS PASSED** — 4 mix nodes mounted, node 0 gifter service mounted, LEZ RLN active, sender+receiver initialized/started/mix-mounted, intro bundle created, sender publishes, receiver delivers ≥1 chat event. Local runs are deterministic; testnet runs may report 14/15 with the receiver-delivery check as the failing one (failure modes documented in `cleanup/FRESH_CLONE_RESULTS.md`).
@@ -109,15 +149,21 @@ rm -f vendor/logos-lez-rln/dev/wallet_config.json vendor/logos-lez-rln/dev/stora
 rm -f ~/.logos-lez-rln/payment_account_*.txt
 ```
 
-Testnet wallet drift (`KeyNotFoundError`, account-init timeout):
+Testnet wallet drift (`KeyNotFoundError`, account-init timeout, `register_member failed`, "gifter dial failed after 5 attempts"):
 ```bash
-TREE=000102030405060708090a0b0c0d0e0f10111213141516171a05100200000000
-rm -f ~/.logos-lez-rln/{supply_holding,payment_account}_${TREE}.txt
-rm -f vendor/logos-lez-rln/testnet/storage.json
-cp vendor/logos-lez-rln/testnet/storage.json.seed vendor/logos-lez-rln/testnet/storage.json
-cp vendor/logos-lez-rln/testnet/supply_holding.txt ~/.logos-lez-rln/supply_holding_${TREE}.txt
-cp vendor/logos-lez-rln/testnet/payment_account.txt ~/.logos-lez-rln/payment_account_${TREE}.txt
+# Drop the cached sidecars + wallet entirely and let run_setup re-fund.
+# SIM_SLIM=1 would skip run_setup and reuse the cached payment account —
+# do NOT use it for a clean reset, because the cached account is what's
+# probably stale (a payment account from a previous LOCAL run, or the
+# seeded testnet one that's at 0 RLNTOK balance).
+rm -f ~/.logos-lez-rln/payment_account_*.txt ~/.logos-lez-rln/supply_holding_*.txt
+rm -rf ~/.nssa/wallet
+SIM_NETWORK=testnet bash simulations/mix_lez_chat/run_simulation_lgx.sh
 ```
+
+The sim's `[2/6] Deploying programs` will then call `run_setup` against testnet, transfer ~1B RLNTOK from supply_holding into a freshly-derived payment account, and write the new sidecar. The fix is durable across reruns.
+
+If you see node 0 stop logging shortly after startup + every chat client hitting `gifter dial failed`, you're running an old `WALLET_LGX` that pre-dates the `request_timeout(120s)` patch in `lssa/wallet/src/lib.rs`. Either set `WALLET_LGX=` to force the sim to rebuild it, or check that `vendor/logos-lez-rln/lssa/wallet/src/lib.rs` actually has the timeout line (see memory note `project_testnet_http_timeout_root_cause.md`).
 
 Guest binary errors after updating submodules:
 ```bash
