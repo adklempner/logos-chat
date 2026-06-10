@@ -96,3 +96,6 @@ result
 .savedkeys/
 
 AGENTS.md
+
+# sim-monitor build outputs (CMake/Ninja artifacts)
+/simulations/mix_lez_chat/sim-monitor/build/

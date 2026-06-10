@@ -60,6 +60,8 @@ int main(int argc, char* argv[]) {
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("monitor", &backend);
     engine.rootContext()->setContextProperty("chainEvents", backend.chainEventModel());
+    engine.rootContext()->setContextProperty("senderCorrelation", backend.senderCorrelationModel());
+    engine.rootContext()->setContextProperty("nodeCorrelation", backend.nodeCorrelationModel());
 
 #ifdef ENABLE_HOST_MODE
     engine.rootContext()->setContextProperty("chatHost", chatHost);

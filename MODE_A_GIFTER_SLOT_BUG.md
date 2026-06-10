@@ -168,7 +168,7 @@ Documented for the next session — not related to the nonce bug but cost a coup
 
 1. **Stale `~/.logos-lez-rln/payment_account_<TREE_ID>.txt`** caused `KeyNotFoundError` on every gifter `send_public_transaction` against testnet. The sim's `seed_copy` (`simulations/mix_lez_chat/run_simulation.sh:226-247`) has a `[ -f "$dst" ] && return 0` guard, so once a stale sidecar is cached it never gets refreshed. Workaround: `rm ~/.logos-lez-rln/payment_account_*.txt ~/.logos-lez-rln/supply_holding_*.txt vendor/logos-lez-rln/testnet/storage.json vendor/logos-lez-rln/testnet/wallet_config.json` before re-running. Cleaner fix: change the guard to refresh when the shipped source is newer than the cached destination.
 
-2. **Stale dylib path mismatch** between loose `vendor/logos-lez-rln/logos-delivery/build/` and canonical submodule path `vendor/logos-lez-rln/logos-delivery-module/vendor/logos-delivery/build/`. Documented in `cleanup/FRESH_CLONE_RESULTS.md`'s caveat section.
+2. **Stale dylib path mismatch** between loose `vendor/logos-lez-rln/logos-delivery/build/` and canonical submodule path `vendor/logos-lez-rln/logos-delivery-module/vendor/logos-delivery/build/`.
 
 ## Open questions / follow-ups
 

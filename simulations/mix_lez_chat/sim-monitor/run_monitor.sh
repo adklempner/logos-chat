@@ -7,4 +7,4 @@ if [ ! -f "$SCRIPT_DIR/build/sim-monitor" ]; then
     (cd "$SCRIPT_DIR" && nix develop --command bash -c "cmake -B build -GNinja && cmake --build build")
 fi
 
-exec nix develop "$SCRIPT_DIR" --command "$SCRIPT_DIR/build/sim-monitor" --state-dir "$STATE_DIR"
+exec nix develop "$SCRIPT_DIR" --command "$SCRIPT_DIR/build/sim-monitor" --state-dir "$STATE_DIR" "${@:2}"

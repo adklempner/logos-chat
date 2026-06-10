@@ -2,46 +2,62 @@
 
 End-to-end private chat between two logos-chat-module clients over a 4-node mix network with LEZ-backed RLN spam protection.
 
-Two logoscore instances (sender + receiver) establish an X3DH key agreement via an out-of-band intro bundle, then exchange double-ratchet-encrypted messages routed through 3-hop Sphinx onion routes with per-hop RLN proof generation and verification. Node 0 mounts the rln_gifter service; nodes 1-3 and both chat clients register RLN memberships on-chain via the gifter protocol. The sender publishes via `lightpushPublish(mixify=true)`, the mix exit node verifies the RLN proof before fanning out via gossipsub relay, and the receiver consumes the message via a Waku filter subscription.
+Two logoscore instances (sender + receiver) establish an X3DH key agreement via an out-of-band intro bundle, then exchange double-ratchet-encrypted messages routed through 3-hop Sphinx onion routes with per-hop RLN proof generation and verification. Node 0 mounts the rln_gifter service on two codecs (`/logos/rln/membership/1.0.0` for registration + `/logos/rln/membership/status/1.0.0` for status polling); nodes 1-3 and both chat clients register RLN memberships on-chain via the gifter, with a background watcher that polls the status codec until the on-chain membership PDA materialises and corrects the leaf index if a concurrent registration won the optimistic slot. The sender publishes via `lightpushPublish(mixify=true)`, every mix hop verifies the inbound spam proof and generates a fresh proof for the next hop, the exit node fans out via lightpush, and the receiver consumes via a Waku filter subscription.
 
-## macOS
-
-**Prereqs:** nix (with flakes), Docker, cargo-risczero, SSH access to GitHub.
-
-```bash
-git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
-cd logos-chat && bash simulations/mix_lez_chat/setup_and_run.sh
-```
-
-First run: ~15-25 min. Re-runs: `bash simulations/mix_lez_chat/run_simulation.sh --fresh` (~5 min).
-
-## Linux (native)
+## Quick start (macOS / Linux native)
 
 **Prereqs:** nix (with flakes), Docker, cargo-risczero, SSH access to GitHub.
 
 ```bash
-git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
-cd logos-chat && bash simulations/mix_lez_chat/setup_and_run.sh
+git clone -b feat/sim-rln-gifter-auth-v2 git@github.com:logos-messaging/logos-chat.git
+cd logos-chat
+git submodule update --init --recursive
+bash simulations/mix_lez_chat/demo_step.sh
 ```
 
-Same as macOS. On x86_64 Linux this should work out of the box. On aarch64 Linux, guest zkVM binaries must be pre-built on another platform (rzup doesn't support aarch64-linux) and the wallet module nix build needs `RISC0_SKIP_BUILD_KERNELS=1`.
+`demo_step.sh` runs the full sim with `SIM_DEMO_MODE=1`, which prints the 4 gifter-protocol markers as its pass criteria (see below). For the deeper 15-check verification block, use `bash simulations/mix_lez_chat/run_simulation_lgx.sh` directly.
+
+First run: **~30-45 min** (nix builds the logoscore CLI, a custom `liblogosdelivery.dylib`, four `.lgx` bundles, and the `run_setup` Rust binary; testnet runs add register_member confirmation polls). Re-runs against the same checkout reuse the nix store and finish in **~10-15 min** for local, **~20-30 min** for testnet.
+
+On x86_64 Linux this should work out of the box. On aarch64 Linux, guest zkVM binaries must be pre-built on another platform (rzup doesn't support aarch64-linux) and the wallet module nix build needs `RISC0_SKIP_BUILD_KERNELS=1`.
+
+### If `nix bundle` returns 403 (crates.io rate limit)
+
+The wallet and chat `.lgx` builds vendor Rust deps through `static.crates.io`; that endpoint occasionally 403s on fresh clones. The fix is to point the sim at an already-cached `.lgx` in the nix store:
+
+```bash
+find /nix/store -maxdepth 3 -name "logos-chat_module-module-lib.lgx" | head -1   # any recent one
+find /nix/store -maxdepth 3 -name "logos-execution-zone-module*.lgx" | head -1   # the wallet
+CHAT_LGX=<path-from-above> WALLET_LGX=<path-from-above> bash simulations/mix_lez_chat/demo_step.sh
+```
+
+If neither cache hit, run `nix-collect-garbage --delete-older-than 7d` to free disk + retry, or vendor the crate tarballs manually from `~/.cargo/registry/cache/`.
 
 ## Linux (via Docker)
 
-**Prereqs:** Docker with 24GB RAM allocated.
+**Prereqs:** Docker with 24 GB RAM allocated.
 
 ```bash
-git clone -b feat/logos-delivery git@github.com:adklempner/logos-chat.git
+git clone -b feat/sim-rln-gifter-auth-v2 git@github.com:logos-messaging/logos-chat.git
 cd logos-chat && bash scripts/run_in_docker.sh
 ```
 
-The pre-built image (`ghcr.io/adklempner/logos-chat-sim`) is pulled automatically (~8.5GB download). Guest zkVM binaries must exist on the host from a previous macOS/x86_64 build, or set `GUEST_BINARIES_DIR`.
+The pre-built image (`ghcr.io/adklempner/logos-chat-sim`) is pulled automatically (~8.5 GB download). Guest zkVM binaries must exist on the host from a previous macOS/x86_64 build, or set `GUEST_BINARIES_DIR`.
 
 Each sim run: ~10 min (clone + sequencer build + sim). To force a local image rebuild: `REBUILD_IMAGE=1 bash scripts/run_in_docker.sh`.
 
 ## Pass criteria
 
-**ALL 15 CHECKS PASSED** — 4 mix nodes mounted, gifter service, LEZ RLN active, sender+receiver initialized/started/mix-mounted, intro bundle created, messages sent and received.
+**`demo_step.sh` (default fresh-clone entry):** `DEMO PASS: all 4 markers fired` printed in the `[6/6]` block:
+
+1. Gifter service received the membership request (logged on node 0 — the gifter)
+2. Sender received a valid RLN membership (logged on the sender's chat module)
+3. Mix nodes generated RLN proofs (≥1 across nodes 1-3)
+4. A mix node verified another node's proof (≥1 across nodes 1-3)
+
+A passing run also reports `Delivery check after Ns (messages: N/expected ≥1)` if mix forward delivery completed end-to-end; local sims are deterministic and typically deliver, testnet sims sometimes time out at the receiver even when all 4 markers fire (mix-lightpush flake — independent of the gifter protocol).
+
+**`run_simulation_lgx.sh` (no SIM_DEMO_MODE):** the deeper 15-check verification block — 4 mix nodes mounted, gifter service mounted, LEZ RLN active, both chat clients initialised/started/mix-mounted, intro bundle created, sender publishes, receiver delivers ≥1 chat event. Use this when debugging the lower layers.
 
 ## Architecture
 
@@ -57,48 +73,24 @@ logoscore (per mix node)                    logoscore (per chat client)
 
 Node 0 runs the RLN gifter service. Nodes 1-3 register via gifter on startup. Chat clients also register via gifter when `startChat()` runs.
 
-## Configuration
+## LEZ backend
 
-Override defaults via environment:
+The simulation runs against the SPEL framework (logos-lez-rln `feat/eip191-gifter-auth` branch). On-chain RLN programs use SPEL's `#[lez_program]` macro with 32-byte tree IDs, Borsh-encoded state, and PDA-based account derivation via `combine_seeds`. The RLN module's `get_merkle_proofs` RPC returns the merkle proof and validRoots window atomically from the same on-chain main-account read, eliminating the cross-RPC race that previously left proof roots absent from polled validRoots.
 
-| Variable | Default | Description |
-|---|---|---|
-| `SIM_NUM_NODES` | `4` | Number of mix relay nodes |
-| `SIM_BASE_TCP_PORT` | `60001` | First node's TCP port (increments per node) |
-| `SIM_BASE_DISC_PORT` | `9001` | First node's discv5 UDP port (increments per node) |
-| `SIM_CLUSTER_ID` | `99` | Waku cluster ID |
-| `SIM_LOG_LEVEL` | `INFO` | Node log level (TRACE, DEBUG, INFO, WARN, ERROR) |
-| `SIM_CHAT_RECV_PORT` | `60010` | Chat receiver TCP port |
-| `SIM_CHAT_SEND_PORT` | `60011` | Chat sender TCP port |
-| `SIM_KADEMLIA_MIN_WAIT` | `30` (local) / `120` (testnet) | Minimum seconds to wait for kademlia propagation |
-| `SIM_RECEIVER_MIN_WAIT` | `15` (local) / `60` (testnet) | Minimum seconds to wait for receiver to join mix |
-| `SIM_DELIVERY_TIMEOUT` | `120` (local) / `300` (testnet) | Max seconds to wait for message delivery |
-| `SIM_NODE_STARTUP_SLEEP` | `10` (local) / `30` (testnet) | Seconds between launching each mix node |
-| `SIM_NETWORK` | `local` | `local` runs against a sequencer on `127.0.0.1:3040`; `testnet` runs against `https://testnet.lez.logos.co/` |
+## Networks: local sequencer vs testnet
 
-Example — fast iteration with verbose logging:
+`SIM_NETWORK=local` (default) runs against an in-process LSSA sequencer with ~15 s blocks. `SIM_NETWORK=testnet` targets `https://testnet.lez.logos.co/` (~60 s blocks + variable finality lag). On testnet the run uses persistent wallet state under `vendor/logos-lez-rln/testnet/`, seeded on first use from the committed `storage.json.seed` + supply sidecar so fresh clones don't need to redeploy programs.
+
+`SIM_SLIM=1` (testnet only) skips `run_setup` when the shipped `config_account.txt` + a cached `payment_account_<tree>.txt` exist, so fresh clones can run without building `lez-rln`'s `run_setup` binary. Typical slim testnet run:
 
 ```bash
-SIM_LOG_LEVEL=TRACE SIM_KADEMLIA_MIN_WAIT=10 SIM_RECEIVER_MIN_WAIT=5 \
-  bash simulations/mix_lez_chat/run_simulation.sh --fresh
+SIM_NETWORK=testnet SIM_SLIM=1 SIM_DELIVERY_TIMEOUT=1800 \
+    bash simulations/mix_lez_chat/run_simulation.sh --fresh
 ```
 
-## Running against the public testnet
+`SIM_DELIVERY_TIMEOUT=1800` (30 min) is required: the gifter serializes registrations through a single-writer worker that awaits chain confirmation between submissions to avoid per-signer nonce collisions (see `../../MODE_A_GIFTER_SLOT_BUG.md`). With testnet's ~60-90 s block cadence and up to ~6 jobs ahead in the queue, the chat sender (last in line) needs the longer window — the default 300 s would expire before its registration confirms.
 
-```bash
-SIM_NETWORK=testnet bash simulations/mix_lez_chat/run_simulation.sh --fresh
-```
-
-Effect of `SIM_NETWORK=testnet`:
-- Phase 1 (local sequencer launch) is skipped; the script does a one-shot reachability check against `https://testnet.lez.logos.co/` and dies up front if unreachable.
-- Wallet config is picked from `vendor/logos-lez-rln/testnet/` instead of `dev/`. The wallet's `storage.json` and the on-chain registration accounts persist across runs.
-- `run_setup` deploys + initializes on first run, then short-circuits via `is_initialized` on every run after — see "Config account: …" in the setup output either way.
-- Timing floors (`SIM_KADEMLIA_MIN_WAIT`, `SIM_RECEIVER_MIN_WAIT`, `SIM_DELIVERY_TIMEOUT`, `SIM_NODE_STARTUP_SLEEP`) and `LEZ_RLN_BLOCK_SEAL_SECS` default higher to match ~60s testnet block times.
-
-Prerequisites:
-- The gifter mix node's payment account must be funded on testnet. The first successful `SIM_NETWORK=testnet … --fresh` run populates `~/.logos-lez-rln/payment_account_<tree_id>.txt` automatically; subsequent runs reuse it.
-- Expected wall-clock runtime: ~20–25 minutes (first run) / ~15 minutes (subsequent runs), vs. ~3 minutes locally.
-- Only one developer at a time — concurrent testnet sim runs share the gifter wallet and will collide.
+Testnet runs are non-deterministic — gifter slot allocation, block confirmation, and mix circuit timing all vary per run. The defensive layers (self-verify on bad proofs, libp2p-status-codec watcher correcting optimistic leaf indices) catch most failure modes; a silent-drop gap is still open.
 
 ### Reproducibility on a fresh clone
 
@@ -119,26 +111,91 @@ What stays shared vs. fresh:
 
 **Security:** the supply signing key being in the repo is acceptable only because testnet does not charge gas and the tokens are test tokens with no real value.
 
-### Slim mode (`SIM_SLIM=1`, testnet only)
-
-`SIM_SLIM=1 SIM_NETWORK=testnet ./run_simulation.sh --fresh` skips `run_setup` entirely and reuses the shipped `config_account` + cached `payment_account` from `vendor/logos-lez-rln/testnet/`. Two consequences:
-
-- No `lez-rln/run_setup` binary build is required. Combined with the submodule split below, a fresh clone can run the sim without ever invoking `cargo` from `lez-rln/`.
-- All slim-mode runs share one on-chain payment account — concurrent runs across devs will race on its nonce. Use serially.
-
-**Minimum submodule set for slim mode:**
+### Minimum submodule set for slim mode
 
 ```bash
-git clone --branch feat/logos-delivery <repo> logos-chat
+git clone --branch feat/sim-rln-gifter-auth-v2 <repo> logos-chat
 cd logos-chat
 git submodule update --init vendor/logos-lez-rln vendor/nwaku vendor/nimbus-build-system vendor/nim-protobuf-serialization vendor/npeg vendor/blake2 vendor/libchat vendor/nim-ffi
 (cd vendor/logos-lez-rln && git submodule update --init logos-delivery-module)
 (cd vendor/logos-lez-rln/logos-delivery-module && git submodule update --init --recursive vendor/logos-delivery)
 ```
 
-The previously-required `lssa` (~11 GB) and `logos-execution-zone-module` clones are unnecessary for slim mode — both are fetched via nix flake from GitHub when building the wallet/RLN modules. The top-level `vendor/logos-lez-rln/logos-delivery` submodule was removed entirely (the active copy is the nested `logos-delivery-module/vendor/logos-delivery`).
+The `lssa` (~11 GB) and `logos-execution-zone-module` clones are unnecessary for slim mode — both are fetched via nix flake from GitHub when building the wallet/RLN modules. For the local-sequencer flow (`SIM_NETWORK=local`) or to hack on the wallet/sequencer source, init the extras: `(cd vendor/logos-lez-rln && git submodule update --init lssa logos-execution-zone-module)`. The Docker bootstrap (`setup_and_run.sh`) gates these on `SIM_NETWORK=local` automatically; pass `SIM_FULL_SUBMODS=1` to force the wide init.
 
-For the local-sequencer flow (`SIM_NETWORK=local`) or to hack on the wallet/sequencer source, init the extras: `(cd vendor/logos-lez-rln && git submodule update --init lssa logos-execution-zone-module)`. The Docker bootstrap (`setup_and_run.sh`) gates these on `SIM_NETWORK=local` automatically; pass `SIM_FULL_SUBMODS=1` to force the wide init.
+All slim-mode runs share one on-chain payment account — concurrent runs across devs will race on its nonce. Use serially.
+
+## Running the GUI chat client (logos-chat-ui-app) against the sim
+
+The headless sim normally drives both sender and receiver. For demos / interactive testing you can keep the sim infra (sequencer + 4 mix nodes + gifter + receiver) running headless and have the GUI act as the sender.
+
+### One-shot setup (per shell)
+
+```bash
+# Terminal 1 — sim infra (stays in foreground; Ctrl-C cleans up)
+SIM_INFRA_ONLY=1 bash simulations/mix_lez_chat/run_simulation_lgx.sh
+# … or for testnet:
+SIM_NETWORK=testnet SIM_INFRA_ONLY=1 bash simulations/mix_lez_chat/run_simulation_lgx.sh
+```
+
+Wait for the green banner. It prints:
+- the `export CHAT_*` env vars the GUI needs (cluster id, port, gifter peer, auth key, mix nodes, static peers),
+- the receiver's intro bundle (`logos_chatintro_1_…`) to paste into the GUI.
+
+The sim then polls the receiver log for inbound `chatNewMessage` events and prints one line per delivered message, so you have live feedback while you drive the GUI.
+
+### Staging the GUI
+
+```bash
+# Terminal 2 — stage a writable copy of logos-chat-ui-app with the right modules
+bash simulations/mix_lez_chat/setup_chat_ui_app.sh
+```
+
+`setup_chat_ui_app.sh` auto-resolves the chat-ui-app, wallet, and RLN `.lgx` paths and builds the wallet `.lgx` with the same `--override-input` chain as the sim. That chain carries the `request_timeout(...)` patch in the wallet's Rust HTTP client; without it, `send_public_transaction` against a slow testnet hangs the wallet's Qt thread on the first call and the GUI silently stops responding. Set `APP_NIX`, `WALLET_LGX`, or `RLN_LGX` to skip the auto-resolve.
+
+### Launching the GUI
+
+Paste the `export CHAT_*` block printed by the sim into terminal 2, then:
+
+```bash
+/tmp/chat_ui_app_staged/bin/logos-chat-ui-app
+```
+
+In the GUI: Ctrl+I (Initialize Chat) → Ctrl+S (Start Chat) → File → New Private Conversation → paste the intro bundle the sim printed → type a message → send. Terminal 1 will print `RECEIVED MESSAGE #1` when the receiver picks it up.
+
+For testnet on a fresh wallet: see "If it fails → Testnet wallet drift" below.
+
+## Configuration
+
+Override defaults via environment:
+
+| Variable | Default (local / testnet) | Purpose |
+|---|---|---|
+| `SIM_NETWORK` | `local` | `local` runs against a sequencer on `127.0.0.1:3040`; `testnet` runs against `https://testnet.lez.logos.co/` |
+| `SIM_DEMO_MODE` | `0` | Swap the `[6/6]` block for the 4-marker gifter-protocol check (set automatically by `demo_step.sh`) |
+| `SIM_SETUP_ONLY` | `0` | Bring sim infra + receiver up, write `demo_state.env`, then block — used by `demo_setup.sh` and the GUI flow |
+| `SIM_INFRA_ONLY` | `0` | Like `SIM_SETUP_ONLY` but interactive: prints env vars + intro bundle for a human GUI driver |
+| `SIM_SLIM` | `0` | Testnet only: skip `run_setup` when a cached funded payment account is present. Saves the lez-rln Rust build on fresh clones; stale sidecars from a prior LOCAL run will fail (wipe per "If it fails" below) |
+| `SIM_NUM_NODES` | `4` | Number of mix relay nodes |
+| `SIM_BASE_TCP_PORT` | `60001` | First node's TCP port (increments per node) |
+| `SIM_BASE_DISC_PORT` | `9001` | First node's discv5 UDP port (increments per node) |
+| `SIM_CLUSTER_ID` | `99` | Waku cluster ID |
+| `SIM_LOG_LEVEL` | `INFO` | Chronicles log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `SIM_CHAT_RECV_PORT` | `60010` | Chat receiver TCP port |
+| `SIM_CHAT_SEND_PORT` | `60011` | Chat sender TCP port |
+| `SIM_KADEMLIA_MIN_WAIT` | `30 / 120` | Minimum seconds before kademlia/RLN readiness gate can pass |
+| `SIM_KADEMLIA_HARD_CAP` | `180 / 1800` | Hard ceiling (s) on the readiness wait |
+| `SIM_RECEIVER_MIN_WAIT` | `15 / 60` | Minimum seconds to wait for receiver to join mix |
+| `SIM_DELIVERY_TIMEOUT` | `120 / 300` | Max seconds to wait for receiver to see a chat event |
+| `SIM_NODE_STARTUP_SLEEP` | `10 / 30` | Spacing between mix node startups |
+| `WALLET_LGX` / `RLN_LGX` / `DELIVERY_LGX` / `CHAT_LGX` | unset | Skip the corresponding `nix bundle` and use a pre-built `.lgx` from `/nix/store`. Useful when crates.io 403s on a fresh build (see "If `nix bundle` returns 403" above) |
+
+Example — fast iteration with verbose logging:
+
+```bash
+SIM_LOG_LEVEL=TRACE SIM_KADEMLIA_MIN_WAIT=10 SIM_RECEIVER_MIN_WAIT=5 \
+  bash simulations/mix_lez_chat/run_simulation_lgx.sh
+```
 
 ## `--fresh` behavior
 
@@ -151,26 +208,45 @@ When `--fresh` is passed:
 
 Without `--fresh`, on `SIM_NETWORK=local` it reuses an existing sequencer if port 3040 is already bound.
 
-## Troubleshooting
+## If it fails
 
-**Re-run with fresh state:**
+Re-run with fresh state:
 ```bash
-bash simulations/mix_lez_chat/run_simulation.sh --fresh
+bash simulations/mix_lez_chat/demo_step.sh
 ```
 
-**"Sequencer failed to start"** — port 3040 already in use:
+Wallet/sequencer errors (local):
 ```bash
-kill $(lsof -ti tcp:3040) && bash simulations/mix_lez_chat/run_simulation.sh --fresh
+kill $(lsof -ti tcp:3040) 2>/dev/null   # stop any stale sequencer
+rm -rf ~/.nssa/wallet
+rm -f vendor/logos-lez-rln/dev/wallet_config.json vendor/logos-lez-rln/dev/storage.json
+rm -f ~/.logos-lez-rln/payment_account_*.txt ~/.logos-lez-rln/supply_holding_*.txt
+rm -rf vendor/logos-lez-rln/lssa/rocksdb
 ```
 
-**"run_setup failed" / "Timeout waiting for account"** — stale guest binaries or wallet state:
+Testnet wallet drift (`KeyNotFoundError`, account-init timeout, `register_member failed`, "gifter dial failed after 5 attempts"):
+```bash
+# Drop the cached sidecars + wallet entirely and let run_setup re-fund.
+# SIM_SLIM=1 would skip run_setup and reuse the cached payment account —
+# do NOT use it for a clean reset, because the cached account is what's
+# probably stale (a payment account from a previous LOCAL run, or the
+# seeded testnet one that's at 0 RLNTOK balance).
+rm -f ~/.logos-lez-rln/payment_account_*.txt ~/.logos-lez-rln/supply_holding_*.txt
+rm -rf ~/.nssa/wallet
+SIM_NETWORK=testnet bash simulations/mix_lez_chat/run_simulation_lgx.sh
+```
+
+The sim's `[2/6] Deploying programs` will then call `run_setup` against testnet, transfer ~1B RLNTOK from supply_holding into a freshly-derived payment account, and write the new sidecar. The fix is durable across reruns.
+
+If node 0 stops logging shortly after startup and chat clients hit `gifter dial failed`, the `WALLET_LGX` in use is missing the sequencer HTTP request-timeout patch (see `vendor/logos-lez-rln/lssa/wallet/src/lib.rs` for the `SequencerClientBuilder::request_timeout(...)` call). Unset `WALLET_LGX` to force a rebuild from the current sources.
+
+Stale guest binaries (after updating submodules):
 ```bash
 rm -rf vendor/logos-lez-rln/lez-rln/methods/guest/target
-rm -f vendor/logos-lez-rln/dev/wallet_config.json vendor/logos-lez-rln/dev/storage.json
-bash simulations/mix_lez_chat/setup_and_run.sh
+bash simulations/mix_lez_chat/demo_step.sh
 ```
 
-**"Sender started FAIL"** — stale Qt RemoteObjects sockets:
+Stale Qt RemoteObjects sockets ("Sender started FAIL"):
 ```bash
 rm -f /tmp/logos_*
 bash simulations/mix_lez_chat/run_simulation.sh --fresh
@@ -189,7 +265,7 @@ This simulation provides a complete mix network infrastructure that other logos 
 - Wallet modules for on-chain transactions
 
 ### What you replace
-The chat_module sender/receiver instances (phase 5 of run_simulation.sh). Your module needs:
+The chat_module sender/receiver instances (phase 5 of `run_simulation.sh`). Your module needs:
 
 1. **A C++ Qt plugin** implementing `PluginInterface` (see `chat_module_plugin.cpp`)
    - `initLogos(LogosAPI*)` — receive the LogosAPI instance

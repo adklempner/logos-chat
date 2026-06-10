@@ -4,11 +4,7 @@
 #include <QJsonArray>
 #include <QDir>
 
-MonitorBackend::MonitorBackend(QObject* parent) : QObject(parent) {
-    m_blockAgeTimer.setInterval(1000);
-    connect(&m_blockAgeTimer, &QTimer::timeout, this, &MonitorBackend::onBlockAgeTick);
-    m_blockAgeTimer.start();
-}
+MonitorBackend::MonitorBackend(QObject* parent) : QObject(parent) {}
 
 void MonitorBackend::setRpcUrl(const QString& url) {
     if (m_rpcClient) { m_rpcClient->stop(); delete m_rpcClient; m_rpcClient = nullptr; }
@@ -28,7 +24,6 @@ void MonitorBackend::setStateDir(const QString& path, bool replay) {
     }
     if (m_senderTailer) { m_senderTailer->stop(); delete m_senderTailer; m_senderTailer = nullptr; }
     if (m_receiverTailer) { m_receiverTailer->stop(); delete m_receiverTailer; m_receiverTailer = nullptr; }
-    if (m_receiver2Tailer) { m_receiver2Tailer->stop(); delete m_receiver2Tailer; m_receiver2Tailer = nullptr; }
 
     resetState();
 
@@ -54,49 +49,19 @@ void MonitorBackend::setStateDir(const QString& path, bool replay) {
     connect(m_receiverTailer, &LogTailer::newLine, this, [this](const QString& l){ onChatLine(false, l); });
     connect(m_receiverTailer, &LogTailer::fileReset, this, [this]{ resetState(); });
     m_receiverTailer->start();
-
-    // Receiver2 (optional — file may not exist)
-    m_receiver2Tailer = new LogTailer(QDir(path).filePath("chat_receiver2.log"), replay, this);
-    connect(m_receiver2Tailer, &LogTailer::newLine, this, [this](const QString& l){
-        auto ev = LogParser::parseChatLine(l);
-        auto& chat = m_receiver2;
-        switch (ev.type) {
-        case ParsedEvent::ChatInit: chat.phase = "init"; m_hasReceiver2 = true; break;
-        case ParsedEvent::ChatStart: chat.phase = "start"; break;
-        case ParsedEvent::ChatMembershipRequested: chat.phase = "request"; break;
-        case ParsedEvent::ChatMembershipGranted:
-            chat.phase = QStringLiteral("opt:%1").arg(ev.intVal); chat.optLeaf = ev.intVal; break;
-        case ParsedEvent::ChatMembershipConfirmed:
-            chat.phase = QStringLiteral("conf:%1").arg(ev.intVal); chat.authLeaf = ev.intVal; break;
-        case ParsedEvent::ChatNewMessage: ++chat.msgIn; break;
-        case ParsedEvent::ChatNewConversation: chat.phase = "intro_accepted"; break;
-        case ParsedEvent::ChatPeerStatus:
-            chat.peers = ev.intVal; chat.mixReady = ev.boolVal; chat.mixPool = ev.intVal2; break;
-        default: return;
-        }
-        emit stateChanged();
-    });
-    connect(m_receiver2Tailer, &LogTailer::fileReset, this, [this]{ resetState(); });
-    m_receiver2Tailer->start();
 }
 
 void MonitorBackend::resetState() {
     m_blockId = 0;
-    m_lastBlockTime = QDateTime();
-    m_txValidated = 0;
-    m_txFailed = 0;
     for (auto& n : m_nodes) n = {};
     m_sender = {};
     m_receiver = {};
-    m_receiver2 = {};
-    m_hasReceiver2 = false;
+    m_markers = {};
+    m_membershipRequestTime = QDateTime();
     m_chainEvents.clear();
+    m_senderCorrelation.clear();
+    m_nodeCorrelation.clear();
     emit stateChanged();
-}
-
-int MonitorBackend::blockAgeSecs() const {
-    if (!m_lastBlockTime.isValid()) return -1;
-    return static_cast<int>(m_lastBlockTime.secsTo(QDateTime::currentDateTime()));
 }
 
 QString MonitorBackend::mixNodeStates() const {
@@ -106,45 +71,41 @@ QString MonitorBackend::mixNodeStates() const {
         o["mounted"] = m_nodes[i].mixMounted;
         o["lez"] = m_nodes[i].lezWired;
         o["kad"] = m_nodes[i].kadReady;
+        o["proofs"] = m_nodes[i].proofsVerified;
+        o["roots"] = m_nodes[i].rootsCount;
         arr.append(o);
     }
     return QJsonDocument(arr).toJson(QJsonDocument::Compact);
 }
 
-int MonitorBackend::gifterQueueDepth() const {
-    const auto& g = m_nodes[0];
-    int depth = g.gifterReqsIn - g.gifterReqsOk - g.gifterReqsFail;
-    return depth > 0 ? depth : 0;
+QString MonitorBackend::marker3NodeCounts() const {
+    QJsonArray arr;
+    for (int i = 0; i < 4; ++i) {
+        QJsonObject o;
+        o["node"] = i;
+        o["proofs"] = m_nodes[i].proofsVerified;
+        arr.append(o);
+    }
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
 }
 
-QString MonitorBackend::gifterStatus() const {
-    if (!m_nodes[0].gifterMounted) return QStringLiteral("not-mounted");
-    int depth = gifterQueueDepth();
-    if (depth > 0) return QStringLiteral("queue:%1").arg(depth);
-    return QStringLiteral("idle");
+QString MonitorBackend::nodeRootsInfo() const {
+    QJsonArray arr;
+    for (int i = 0; i < 4; ++i) {
+        QJsonObject o;
+        o["node"] = i;
+        o["roots"] = m_nodes[i].rootsCount;
+        arr.append(o);
+    }
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
 }
 
 void MonitorBackend::onSequencerLine(const QString& line) {
-    static int lineCount = 0;
-    if (++lineCount <= 3) qDebug() << "SEQ LINE" << lineCount << ":" << line.left(80);
     auto ev = LogParser::parseSequencerLine(line);
-    if (ev.type != ParsedEvent::None && lineCount <= 10) qDebug() << "SEQ MATCH type=" << ev.type;
-    switch (ev.type) {
-    case ParsedEvent::SeqBlockCreated:
+    if (ev.type == ParsedEvent::SeqBlockCreated)
         m_blockId = ev.intVal;
-        m_lastBlockTime = QDateTime::currentDateTime();
-        break;
-    case ParsedEvent::SeqTxValidated:
-        ++m_txValidated;
-        addChainEvent("TX_OK", QStringLiteral("hash=%1").arg(ev.strVal));
-        break;
-    case ParsedEvent::SeqTxFailed:
-        ++m_txFailed;
-        addChainEvent("TX_FAIL", QStringLiteral("hash=%1 %2").arg(ev.strVal, ev.strVal2));
-        break;
-    default: return;
-    }
-    emit stateChanged();
+    if (ev.type != ParsedEvent::None)
+        emit stateChanged();
 }
 
 void MonitorBackend::onNodeLine(int idx, const QString& line) {
@@ -156,23 +117,68 @@ void MonitorBackend::onNodeLine(int idx, const QString& line) {
     case ParsedEvent::KadReady: node.kadReady = true; break;
     case ParsedEvent::GifterMounted: node.gifterMounted = true; break;
     case ParsedEvent::GifterSelfRegistered: node.gifterSelfReg = true; break;
-    case ParsedEvent::GifterAuthBounce:
-        addChainEvent("GIFTER_AUTHFAIL", ev.strVal);
-        break;
     case ParsedEvent::GifterReqReceived:
         ++node.gifterReqsIn;
-        addChainEvent("GIFTER_REQ", QStringLiteral("req=%1").arg(ev.strVal));
+        if (!m_markers.m1_active) {
+            m_markers.m1_active = true;
+            m_markers.m1_requestId = ev.strVal;
+            m_markers.m1_peerId = ev.strVal2;
+            m_markers.m1_identityCommitment = ev.strVal3;
+            m_markers.m1_timestamp = nowTimestamp();
+            m_markers.m1_rawLine = LogParser::stripLogosHostPrefix(line);
+        }
+        addCorrelation(m_nodeCorrelation,
+            QStringLiteral("N%1 GIFTER").arg(idx),
+            QStringLiteral("handling request id=%1 peer=%2").arg(ev.strVal, ev.strVal2));
         break;
     case ParsedEvent::GifterReqSucceeded:
         ++node.gifterReqsOk;
-        addChainEvent("REGISTER", QStringLiteral("leaf=%1 confirmed").arg(ev.intVal));
+        if (m_markers.m2_active && ev.strVal.length() > 0)
+            m_markers.m2_requestId = ev.strVal;
+        addCorrelation(m_nodeCorrelation,
+            QStringLiteral("N%1 GIFTER").arg(idx),
+            QStringLiteral("registration succeeded leaf=%1").arg(ev.intVal));
         break;
     case ParsedEvent::GifterReqFailed:
         ++node.gifterReqsFail;
-        addChainEvent("REG_FAIL", ev.strVal);
+        addCorrelation(m_nodeCorrelation,
+            QStringLiteral("N%1 GIFTER").arg(idx),
+            QStringLiteral("registration FAILED: %1").arg(ev.strVal));
         break;
-    case ParsedEvent::WalletFfiError:
-        addChainEvent("WALLET_ERR", QStringLiteral("FFI error %1").arg(ev.intVal));
+    case ParsedEvent::ProofVerified:
+        ++node.proofsVerified;
+        ++m_markers.m3_verifyCount;
+        if (!m_markers.m3_active) {
+            m_markers.m3_active = true;
+            m_markers.m3_epoch = ev.intVal;
+            m_markers.m3_nullifier = ev.strVal;
+            m_markers.m3_rawLine = LogParser::stripLogosHostPrefix(line);
+        }
+        addCorrelation(m_nodeCorrelation,
+            QStringLiteral("N%1 VERIFY").arg(idx),
+            QStringLiteral("proof OK epoch=%1 null=%2").arg(ev.intVal).arg(ev.strVal));
+        break;
+    case ParsedEvent::TotalProofsVerified:
+        node.proofsVerified = ev.intVal;
+        if (!m_markers.m3_active && ev.intVal > 0) {
+            m_markers.m3_active = true;
+            m_markers.m3_rawLine = LogParser::stripLogosHostPrefix(line);
+        }
+        m_markers.m3_verifyCount = 0;
+        for (int i = 0; i < 4; ++i) m_markers.m3_verifyCount += m_nodes[i].proofsVerified;
+        break;
+    case ParsedEvent::ProofGenerated:
+        addCorrelation(m_nodeCorrelation,
+            QStringLiteral("N%1 PROOF").arg(idx),
+            QStringLiteral("Generated RLN proof epoch=%1").arg(ev.intVal));
+        break;
+    case ParsedEvent::GifterAuthBounce:
+        addCorrelation(m_nodeCorrelation,
+            QStringLiteral("N%1 AUTH").arg(idx),
+            QStringLiteral("BOUNCE: %1").arg(ev.strVal));
+        break;
+    case ParsedEvent::RlnRootsPolled:
+        node.rootsCount = ev.intVal;
         break;
     default: return;
     }
@@ -185,62 +191,69 @@ void MonitorBackend::onChatLine(bool isSender, const QString& line) {
     switch (ev.type) {
     case ParsedEvent::ChatInit: chat.phase = "init"; break;
     case ParsedEvent::ChatStart: chat.phase = "start"; break;
-    case ParsedEvent::ChatMembershipRequested: chat.phase = "request"; break;
+    case ParsedEvent::ChatMembershipRequested:
+        chat.phase = "request";
+        if (isSender) {
+            m_membershipRequestTime = QDateTime::currentDateTime();
+            addCorrelation(m_senderCorrelation, QStringLiteral("SENDER"),
+                QStringLiteral("requesting RLN membership from gifter"));
+        }
+        break;
     case ParsedEvent::ChatMembershipGranted:
         chat.phase = QStringLiteral("opt:%1").arg(ev.intVal);
         chat.optLeaf = ev.intVal;
+        if (isSender) {
+            m_markers.m2_active = true;
+            m_markers.m2_leafIndex = ev.intVal;
+            m_markers.m2_rawLine = LogParser::stripLogosHostPrefix(line);
+            addCorrelation(m_senderCorrelation, QStringLiteral("SENDER"),
+                QStringLiteral("RLN membership granted leaf=%1").arg(ev.intVal));
+        }
         break;
     case ParsedEvent::ChatMembershipConfirmed:
         chat.phase = QStringLiteral("conf:%1").arg(ev.intVal);
         chat.authLeaf = ev.intVal;
-        if (chat.mixReady && chat.mixPool >= 4)
-            chat.phase = "ready";
-        break;
-    case ParsedEvent::ChatLeafCorrected:
-        chat.leafCorrected = true;
-        chat.optLeaf = ev.intVal;
-        chat.authLeaf = ev.intVal2;
-        addChainEvent("LEAF_FIX",
-            QStringLiteral("%1 opt=%2→auth=%3").arg(isSender ? "sender" : "receiver").arg(ev.intVal).arg(ev.intVal2));
-        break;
-    case ParsedEvent::ChatIntroBundleCreated:
-        if (isSender) chat.phase = "intro_emitted";
-        addChainEvent("BUNDLE", ev.strVal.left(30) + "...");
-        break;
-    case ParsedEvent::ChatNewConversation:
-        if (!isSender) chat.phase = "intro_accepted";
-        break;
-    case ParsedEvent::ChatNewMessage:
-        ++chat.msgIn;
-        if (!isSender && chat.msgIn == 1) chat.phase = "msg_received";
+        if (isSender) {
+            m_markers.m2_onChainConfirmed = true;
+            if (m_membershipRequestTime.isValid())
+                m_markers.m2_elapsedSecs = m_membershipRequestTime.secsTo(QDateTime::currentDateTime());
+            addCorrelation(m_senderCorrelation, QStringLiteral("SENDER"),
+                QStringLiteral("membership confirmed on-chain leaf=%1").arg(ev.intVal));
+        }
         break;
     case ParsedEvent::ChatSendResult:
         if (ev.boolVal) {
             ++chat.msgOut;
-            if (isSender && chat.msgOut == 1) chat.phase = "msg_sent";
+            if (isSender) {
+                chat.phase = "msg_sent";
+                addCorrelation(m_senderCorrelation, QStringLiteral("SENDER"),
+                    QStringLiteral("message sent (#%1)").arg(chat.msgOut));
+            }
         }
+        break;
+    case ParsedEvent::ChatNewMessage:
+        ++chat.msgIn;
         break;
     case ParsedEvent::ChatPeerStatus:
         chat.peers = ev.intVal;
         chat.mixReady = ev.boolVal;
         chat.mixPool = ev.intVal2;
-        if (chat.phase.startsWith("conf:") && chat.mixReady && chat.mixPool >= 4)
-            chat.phase = "ready";
+        break;
+    case ParsedEvent::ProofGenerated:
+        if (isSender) {
+            addCorrelation(m_senderCorrelation, QStringLiteral("SENDER"),
+                QStringLiteral("Generated RLN proof epoch=%1").arg(ev.intVal));
+        }
         break;
     case ParsedEvent::RlnRootsPolled:
-        addChainEvent("ROOTS", QStringLiteral("count=%1").arg(ev.intVal));
         break;
     default: return;
     }
     emit stateChanged();
 }
 
-void MonitorBackend::onBlockAgeTick() {
-    if (m_lastBlockTime.isValid()) emit stateChanged();
-}
-
-void MonitorBackend::addChainEvent(const QString& type, const QString& detail) {
-    m_chainEvents.prepend(nowTimestamp(), type, detail);
+void MonitorBackend::addCorrelation(ChainEventModel& model, const QString& label, const QString& detail) {
+    model.prepend(nowTimestamp(), label, detail);
 }
 
 QString MonitorBackend::nowTimestamp() const {

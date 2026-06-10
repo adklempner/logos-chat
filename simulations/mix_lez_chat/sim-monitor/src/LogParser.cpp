@@ -88,8 +88,18 @@ ParsedEvent LogParser::parseMixNodeLine(const QString& raw) {
     }
 
     static const QRegularExpression reGifterReq(
+        QStringLiteral("handling RLN gifter request.*peerId=(\\S+).*requestId=(\\S+).*identityCommitment=(\\S+)"));
+    static const QRegularExpression reGifterReqFallback(
         QStringLiteral("handling RLN gifter request.*requestId=(\\S+)"));
     auto m = reGifterReq.match(line);
+    if (m.hasMatch()) {
+        ev.type = ParsedEvent::GifterReqReceived;
+        ev.strVal = m.captured(2).left(10);
+        ev.strVal2 = m.captured(1);
+        ev.strVal3 = m.captured(3).left(16);
+        return ev;
+    }
+    m = reGifterReqFallback.match(line);
     if (m.hasMatch()) {
         ev.type = ParsedEvent::GifterReqReceived;
         ev.strVal = m.captured(1).left(10);
@@ -98,9 +108,49 @@ ParsedEvent LogParser::parseMixNodeLine(const QString& raw) {
 
     static const QRegularExpression reGifterOk(
         QStringLiteral("RLN gifter registration succeeded.*leafIndex=(\\d+)"));
+    static const QRegularExpression reGifterOkReqId(QStringLiteral("requestId=(\\S+)"));
     m = reGifterOk.match(line);
     if (m.hasMatch()) {
         ev.type = ParsedEvent::GifterReqSucceeded;
+        ev.intVal = m.captured(1).toInt();
+        auto m2 = reGifterOkReqId.match(line);
+        if (m2.hasMatch()) ev.strVal = m2.captured(1).left(10);
+        return ev;
+    }
+
+    static const QRegularExpression reProofVerified(
+        QStringLiteral("Proof verified successfully.*epoch=(\\d+).*nullifier=(\\S+)"));
+    m = reProofVerified.match(line);
+    if (m.hasMatch()) {
+        ev.type = ParsedEvent::ProofVerified;
+        ev.intVal = m.captured(1).toInt();
+        ev.strVal = m.captured(2).left(16);
+        return ev;
+    }
+
+    static const QRegularExpression reTotalProofs(
+        QStringLiteral("Total proofs verified.*count=(\\d+)"));
+    m = reTotalProofs.match(line);
+    if (m.hasMatch()) {
+        ev.type = ParsedEvent::TotalProofsVerified;
+        ev.intVal = m.captured(1).toInt();
+        return ev;
+    }
+
+    static const QRegularExpression reNodeRoots(
+        QStringLiteral("get_valid_roots:.*count=\\s*(\\d+)"));
+    m = reNodeRoots.match(line);
+    if (m.hasMatch()) {
+        ev.type = ParsedEvent::RlnRootsPolled;
+        ev.intVal = m.captured(1).toInt();
+        return ev;
+    }
+
+    static const QRegularExpression reProofGen(
+        QStringLiteral("Generated RLN proof successfully.*epoch=(\\d+)"));
+    m = reProofGen.match(line);
+    if (m.hasMatch()) {
+        ev.type = ParsedEvent::ProofGenerated;
         ev.intVal = m.captured(1).toInt();
         return ev;
     }
@@ -233,6 +283,15 @@ ParsedEvent LogParser::parseChatLine(const QString& raw) {
 
     if (line.contains(QStringLiteral("fetchAccountData failed: empty data"))) {
         ev.type = ParsedEvent::RlnFetchFailed;
+        return ev;
+    }
+
+    static const QRegularExpression reProofGen(
+        QStringLiteral("Generated RLN proof successfully.*epoch=(\\d+)"));
+    m = reProofGen.match(line);
+    if (m.hasMatch()) {
+        ev.type = ParsedEvent::ProofGenerated;
+        ev.intVal = m.captured(1).toInt();
         return ev;
     }
 

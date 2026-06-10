@@ -32,6 +32,9 @@ struct ParsedEvent {
         ChatPeerStatus,
         RlnRootsPolled,
         RlnFetchFailed,
+        ProofGenerated,
+        ProofVerified,
+        TotalProofsVerified,
     };
 
     Type type = None;
@@ -40,6 +43,7 @@ struct ParsedEvent {
     bool boolVal = false;
     QString strVal;
     QString strVal2;
+    QString strVal3;
 };
 
 class LogParser {

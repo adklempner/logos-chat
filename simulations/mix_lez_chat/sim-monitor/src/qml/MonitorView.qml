@@ -5,20 +5,17 @@ import QtQuick.Layouts 1.15
 ApplicationWindow {
     id: root
     visible: true
-    width: 1100
-    height: 720
+    width: 1200
+    height: 800
     color: "#0A0A0A"
 
-    // Dynamic title
     title: {
-        var nodes = 0
-        try { var n = JSON.parse(monitor.mixNodeStates); nodes = n.filter(function(x){return x.lez && x.kad}).length } catch(e){}
-        var s = "Sim Monitor"
-        if (monitor.blockId > 0) s += " — block " + monitor.blockId
-        s += " | " + nodes + "/4 nodes"
-        if (monitor.senderPhase !== "---") s += " | S:" + monitor.senderPhase
-        if (monitor.receiverPhase !== "---") s += " | R:" + monitor.receiverPhase
-        return s
+        var parts = ["RLN Gifter Demo"]
+        if (monitor.marker1Active) parts.push("(1)✓")
+        if (monitor.marker2Active) parts.push("(2)✓")
+        if (monitor.marker3Active) parts.push("(3)✓")
+        if (monitor.blockId > 0) parts.push("block " + monitor.blockId)
+        return parts.join(" — ")
     }
 
     readonly property color bgPrimary:   "#0A0A0A"
@@ -46,476 +43,556 @@ ApplicationWindow {
         return textTertiary
     }
 
+    function nodeRoots(idx) {
+        try {
+            var arr = JSON.parse(monitor.nodeRootsInfo)
+            return arr[idx].roots
+        } catch(e) { return 0 }
+    }
+
+    function nodeProofs(idx) {
+        try {
+            var arr = JSON.parse(monitor.marker3NodeCounts)
+            return arr[idx].proofs
+        } catch(e) { return 0 }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 10
-        spacing: 6
+        spacing: 8
 
-        // ═══════════════════════════════════════════════════════════
-        // INFRA: Sequencer heartbeat + Network topology + Gifter
-        // ═══════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════
+        // ZONE 1: TOPOLOGY PANE
+        // ═══════════════════════════════════════════════════
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 130
+            Layout.preferredHeight: 150
             color: bgSecondary
-            radius: 6
+            radius: 8
+
+            property int activeEdge: -1
+
+            SequentialAnimation {
+                id: edgePulse
+                loops: 1
+                PropertyAction { target: topologyRect; property: "activeEdge"; value: 0 }
+                PauseAnimation { duration: 200 }
+                PropertyAction { target: topologyRect; property: "activeEdge"; value: 1 }
+                PauseAnimation { duration: 200 }
+                PropertyAction { target: topologyRect; property: "activeEdge"; value: 2 }
+                PauseAnimation { duration: 200 }
+                PropertyAction { target: topologyRect; property: "activeEdge"; value: 3 }
+                PauseAnimation { duration: 200 }
+                PropertyAction { target: topologyRect; property: "activeEdge"; value: -1 }
+            }
+
+            id: topologyRect
+            property bool _marker3Seen: false
+
+            RowLayout {
+                anchors.centerIn: parent
+                spacing: 0
+
+                // Sender icon
+                Column {
+                    spacing: 3
+                    Rectangle {
+                        width: 32; height: 32; radius: 16
+                        color: monitor.senderPhase !== "---" ? root.accent : root.textTertiary
+                        border.color: Qt.lighter(color, 1.3); border.width: 2
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        Text { anchors.centerIn: parent; font.family: root.monoFont; font.pixelSize: 12; font.bold: true; color: "#000"; text: "S" }
+                    }
+                    Text { font.family: root.monoFont; font.pixelSize: 8; color: root.textTertiary; text: "sender"; anchors.horizontalCenter: parent.horizontalCenter }
+                }
+
+                // Edge: sender → N0
+                Rectangle {
+                    width: 30; height: 3; radius: 1
+                    color: topologyRect.activeEdge === 0 ? root.accent : root.border
+                    Layout.alignment: Qt.AlignVCenter
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                }
+
+                // Mix nodes
+                Repeater {
+                    model: 4
+                    Row {
+                        spacing: 0
+                        Column {
+                            spacing: 2
+
+                            Rectangle {
+                                width: 48; height: 48; radius: 24
+                                color: nodeColor(monitor.mixNodeStates, index)
+                                border.color: Qt.lighter(nodeColor(monitor.mixNodeStates, index), 1.3); border.width: 2
+                                anchors.horizontalCenter: parent.horizontalCenter
+
+                                Text { anchors.centerIn: parent; font.family: root.monoFont; font.pixelSize: 14; font.bold: true; color: "#000"; text: "N" + index }
+                            }
+
+                            // Role badge
+                            Rectangle {
+                                visible: index === 0
+                                width: gLbl.implicitWidth + 8; height: 14; radius: 4
+                                color: monitor.gifterMounted ? root.accent : root.textTertiary
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                Text { id: gLbl; anchors.centerIn: parent; font.family: root.monoFont; font.pixelSize: 7; font.bold: true; color: "#000"; text: "GIFTER" }
+                            }
+                            Text { visible: index !== 0; font.family: root.monoFont; font.pixelSize: 7; color: root.textTertiary; text: "relay"; anchors.horizontalCenter: parent.horizontalCenter }
+
+                            // Leaf + roots info
+                            Text {
+                                font.family: root.monoFont; font.pixelSize: 8; color: root.textSecond
+                                text: "roots:" + nodeRoots(index) + (nodeProofs(index) > 0 ? " pf:" + nodeProofs(index) : "")
+                                anchors.horizontalCenter: parent.horizontalCenter
+                            }
+                        }
+
+                        // Edge between nodes (not after last)
+                        Rectangle {
+                            visible: index < 3
+                            width: 20; height: 3; radius: 1
+                            color: topologyRect.activeEdge === (index + 1) ? root.accent : root.border
+                            anchors.verticalCenter: parent.verticalCenter
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+                    }
+                }
+
+                // Edge: N3 → receiver
+                Rectangle {
+                    width: 30; height: 3; radius: 1
+                    color: topologyRect.activeEdge === 3 ? root.accent : root.border
+                    Layout.alignment: Qt.AlignVCenter
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                }
+
+                // Receiver icon
+                Column {
+                    spacing: 3
+                    Rectangle {
+                        width: 32; height: 32; radius: 16
+                        color: monitor.senderPhase !== "---" ? root.blue : root.textTertiary
+                        border.color: Qt.lighter(color, 1.3); border.width: 2
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        Text { anchors.centerIn: parent; font.family: root.monoFont; font.pixelSize: 12; font.bold: true; color: "#FFF"; text: "R" }
+                    }
+                    Text { font.family: root.monoFont; font.pixelSize: 8; color: root.textTertiary; text: "receiver"; anchors.horizontalCenter: parent.horizontalCenter }
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // ZONE 2: MARKER TIMELINE
+        // ═══════════════════════════════════════════════════
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 8
+
+            // ── MARKER 1: Gifter Received Request ──
+            Rectangle {
+                id: m1Card
+                Layout.fillWidth: true
+                Layout.preferredHeight: m1Content.implicitHeight + 20
+                color: bgPanel
+                radius: 8
+                border.color: monitor.marker1Active ? root.accent : root.border
+                border.width: monitor.marker1Active ? 1 : 0
+
+                property bool expanded: false
+
+                RowLayout {
+                    id: m1Content
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 12
+
+                    // Checkbox
+                    Rectangle {
+                        id: m1Check
+                        width: 36; height: 36; radius: 6
+                        color: monitor.marker1Active ? root.accent : "transparent"
+                        border.color: monitor.marker1Active ? root.accent : root.border
+                        border.width: 2
+                        Layout.alignment: Qt.AlignTop
+
+                        Text { anchors.centerIn: parent; font.pixelSize: 18; color: "#FFF"; text: monitor.marker1Active ? "✓" : ""; font.bold: true }
+
+                        SequentialAnimation on scale {
+                            id: m1Bounce; loops: 1
+                            NumberAnimation { to: 1.3; duration: 100 }
+                            NumberAnimation { to: 1.0; duration: 200 }
+                        }
+                        property bool _prev: false
+                        Connections {
+                            target: monitor
+                            function onStateChanged() {
+                                if (monitor.marker1Active && !m1Check._prev) { m1Bounce.restart(); m1Check._prev = true }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        // Title
+                        RowLayout {
+                            spacing: 8
+                            Text { font.family: root.monoFont; font.pixelSize: 14; font.bold: true; color: root.accent; text: "(1)" }
+                            Text { font.family: root.monoFont; font.pixelSize: 13; font.bold: true; color: root.textPrimary; text: "GIFTER RECEIVED REQUEST" }
+                            Item { Layout.fillWidth: true }
+                            Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textTertiary
+                                text: monitor.marker1Active ? monitor.marker1Timestamp : "" }
+                        }
+
+                        // Detail fields
+                        Flow {
+                            visible: monitor.marker1Active
+                            Layout.fillWidth: true
+                            spacing: 16
+
+                            Row {
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "requestId:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.accent; text: monitor.marker1RequestId }
+                            }
+                            Row {
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "peerId:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.yellow; text: monitor.marker1PeerId || "---" }
+                            }
+                            Row {
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "idCommitment:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.blue; text: monitor.marker1IdCommitment || "---" }
+                            }
+                        }
+
+                        // Raw log (expandable)
+                        Text {
+                            visible: monitor.marker1Active
+                            font.family: root.monoFont; font.pixelSize: 9; color: root.textTertiary
+                            text: m1Card.expanded ? monitor.marker1RawLine : "▸ raw log"
+                            wrapMode: m1Card.expanded ? Text.WrapAnywhere : Text.NoWrap
+                            Layout.fillWidth: true
+                            elide: m1Card.expanded ? Text.ElideNone : Text.ElideRight
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: m1Card.expanded = !m1Card.expanded
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── MARKER 2: Membership Granted ──
+            Rectangle {
+                id: m2Card
+                Layout.fillWidth: true
+                Layout.preferredHeight: m2Content.implicitHeight + 20
+                color: bgPanel
+                radius: 8
+                border.color: monitor.marker2Active ? root.accent : root.border
+                border.width: monitor.marker2Active ? 1 : 0
+
+                property bool expanded: false
+
+                RowLayout {
+                    id: m2Content
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 12
+
+                    Rectangle {
+                        id: m2Check
+                        width: 36; height: 36; radius: 6
+                        color: monitor.marker2Active ? root.accent : "transparent"
+                        border.color: monitor.marker2Active ? root.accent : root.border
+                        border.width: 2
+                        Layout.alignment: Qt.AlignTop
+
+                        Text { anchors.centerIn: parent; font.pixelSize: 18; color: "#FFF"; text: monitor.marker2Active ? "✓" : ""; font.bold: true }
+
+                        SequentialAnimation on scale {
+                            id: m2Bounce; loops: 1
+                            NumberAnimation { to: 1.3; duration: 100 }
+                            NumberAnimation { to: 1.0; duration: 200 }
+                        }
+                        property bool _prev: false
+                        Connections {
+                            target: monitor
+                            function onStateChanged() {
+                                if (monitor.marker2Active && !m2Check._prev) { m2Bounce.restart(); m2Check._prev = true }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        RowLayout {
+                            spacing: 8
+                            Text { font.family: root.monoFont; font.pixelSize: 14; font.bold: true; color: root.accent; text: "(2)" }
+                            Text { font.family: root.monoFont; font.pixelSize: 13; font.bold: true; color: root.textPrimary; text: "MEMBERSHIP GRANTED" }
+                            Item { Layout.fillWidth: true }
+                            Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textTertiary
+                                text: monitor.marker2Confirmed ? "confirmed in " + Math.round(monitor.marker2ElapsedSecs) + "s" : (monitor.marker2Active ? "awaiting confirmation..." : "") }
+                        }
+
+                        Flow {
+                            visible: monitor.marker2Active
+                            Layout.fillWidth: true
+                            spacing: 16
+
+                            Row {
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "leafIndex:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.accent; text: String(monitor.marker2LeafIndex) }
+                            }
+                            Row {
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "requestId:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.yellow; text: monitor.marker2RequestId || "---" }
+                            }
+                            Row {
+                                visible: monitor.marker2Confirmed
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "on-chain:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.accent; text: "✓ confirmed" }
+                            }
+                        }
+
+                        Text {
+                            visible: monitor.marker2Active
+                            font.family: root.monoFont; font.pixelSize: 9; color: root.textTertiary
+                            text: m2Card.expanded ? monitor.marker2RawLine : "▸ raw log"
+                            wrapMode: m2Card.expanded ? Text.WrapAnywhere : Text.NoWrap
+                            Layout.fillWidth: true
+                            elide: m2Card.expanded ? Text.ElideNone : Text.ElideRight
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: m2Card.expanded = !m2Card.expanded
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── MARKER 3: Proof Verified by Another Node ──
+            Rectangle {
+                id: m3Card
+                Layout.fillWidth: true
+                Layout.preferredHeight: m3Content.implicitHeight + 20
+                color: bgPanel
+                radius: 8
+                border.color: monitor.marker3Active ? root.accent : root.border
+                border.width: monitor.marker3Active ? 1 : 0
+
+                property bool expanded: false
+
+                RowLayout {
+                    id: m3Content
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 12
+
+                    Rectangle {
+                        id: m3Check
+                        width: 36; height: 36; radius: 6
+                        color: monitor.marker3Active ? root.accent : "transparent"
+                        border.color: monitor.marker3Active ? root.accent : root.border
+                        border.width: 2
+                        Layout.alignment: Qt.AlignTop
+
+                        Text { anchors.centerIn: parent; font.pixelSize: 18; color: "#FFF"; text: monitor.marker3Active ? "✓" : ""; font.bold: true }
+
+                        SequentialAnimation on scale {
+                            id: m3Bounce; loops: 1
+                            NumberAnimation { to: 1.3; duration: 100 }
+                            NumberAnimation { to: 1.0; duration: 200 }
+                        }
+                        property bool _prev: false
+                        Connections {
+                            target: monitor
+                            function onStateChanged() {
+                                if (monitor.marker3Active && !m3Check._prev) {
+                                    m3Bounce.restart()
+                                    m3Check._prev = true
+                                    edgePulse.restart()
+                                }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        RowLayout {
+                            spacing: 8
+                            Text { font.family: root.monoFont; font.pixelSize: 14; font.bold: true; color: root.accent; text: "(3)" }
+                            Text { font.family: root.monoFont; font.pixelSize: 13; font.bold: true; color: root.textPrimary; text: "PROOF VERIFIED BY ANOTHER NODE" }
+                            Item { Layout.fillWidth: true }
+                            Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textTertiary
+                                text: monitor.marker3Active ? monitor.marker3VerifyCount + " verifications" : "" }
+                        }
+
+                        Flow {
+                            visible: monitor.marker3Active
+                            Layout.fillWidth: true
+                            spacing: 16
+
+                            Row {
+                                visible: monitor.marker3Epoch > 0
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "epoch:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.accent; text: String(monitor.marker3Epoch) }
+                            }
+                            Row {
+                                visible: monitor.marker3Nullifier.length > 0
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "nullifier:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.yellow; text: monitor.marker3Nullifier }
+                            }
+                            Row {
+                                spacing: 4
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "nodes:" }
+                                Text { font.family: root.monoFont; font.pixelSize: 10; color: root.blue
+                                    text: {
+                                        var parts = []
+                                        for (var i = 0; i < 4; i++) {
+                                            var p = nodeProofs(i)
+                                            if (p > 0) parts.push("N" + i + ":" + p)
+                                        }
+                                        return parts.length > 0 ? parts.join("  ") : "---"
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            visible: monitor.marker3Active
+                            font.family: root.monoFont; font.pixelSize: 9; color: root.textTertiary
+                            text: m3Card.expanded ? monitor.marker3RawLine : "▸ raw log"
+                            wrapMode: m3Card.expanded ? Text.WrapAnywhere : Text.NoWrap
+                            Layout.fillWidth: true
+                            elide: m3Card.expanded ? Text.ElideNone : Text.ElideRight
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: m3Card.expanded = !m3Card.expanded
+                            }
+                        }
+                    }
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // ZONE 3: LIVE CORRELATION STRIP
+        // ═══════════════════════════════════════════════════
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 200
+            color: bgSecondary
+            radius: 8
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 20
-
-                // ── Sequencer heartbeat ──
-                ColumnLayout {
-                    Layout.preferredWidth: 180
-                    spacing: 4
-
-                    RowLayout {
-                        spacing: 6
-                        // Pulsing heartbeat dot
-                        Rectangle {
-                            id: heartbeat
-                            width: 12; height: 12; radius: 6
-                            color: monitor.blockId > 0 ? root.accent : root.textTertiary
-
-                            SequentialAnimation on scale {
-                                id: heartbeatAnim
-                                loops: 1
-                                NumberAnimation { to: 1.4; duration: 100; easing.type: Easing.OutQuad }
-                                NumberAnimation { to: 1.0; duration: 300; easing.type: Easing.InQuad }
-                            }
-                            property int _lastBlock: 0
-                            Connections {
-                                target: monitor
-                                function onStateChanged() {
-                                    if (monitor.blockId !== heartbeat._lastBlock && monitor.blockId > 0) {
-                                        heartbeatAnim.restart()
-                                        heartbeat._lastBlock = monitor.blockId
-                                    }
-                                }
-                            }
-                        }
-                        Text {
-                            font.family: root.monoFont; font.pixelSize: 11; font.bold: true
-                            color: root.textSecond
-                            text: "SEQUENCER"
-                        }
-                    }
-
-                    // Block number (large)
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 28; font.bold: true
-                        color: root.textPrimary
-                        text: monitor.blockId > 0 ? "# " + monitor.blockId : "---"
-                    }
-
-                    // Block age bar
-                    Rectangle {
-                        Layout.fillWidth: true; height: 4; radius: 2; color: root.border
-                        Rectangle {
-                            width: {
-                                var age = monitor.blockAgeSecs
-                                if (age < 0) return 0
-                                return Math.min(1.0, age / 30.0) * parent.width
-                            }
-                            height: parent.height; radius: 2
-                            color: {
-                                var age = monitor.blockAgeSecs
-                                if (age < 15) return root.accent
-                                if (age < 30) return root.yellow
-                                return root.red
-                            }
-                        }
-                    }
-
-                    // TX counters
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 10
-                        color: root.textSecond
-                        text: "tx: " + monitor.txValidated + " ✓  " + monitor.txFailed + " ✗" +
-                              (monitor.rpcReachable ? "  rpc:" + monitor.rpcBlockId : "")
-                    }
-                }
-
-                // ── Separator ──
-                Rectangle { width: 1; Layout.fillHeight: true; color: root.border }
-
-                // ── Network topology (horizontal) ──
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 4
-
-                    Text { font.family: root.monoFont; font.pixelSize: 11; font.bold: true; color: root.textSecond; text: "MIX NETWORK"; Layout.alignment: Qt.AlignHCenter }
-
-                    RowLayout {
-                        Layout.alignment: Qt.AlignHCenter
-                        spacing: 12
-
-                        Repeater {
-                            model: 4
-                            Column {
-                                spacing: 3
-                                Rectangle {
-                                    width: 44; height: 44; radius: 22
-                                    color: nodeColor(monitor.mixNodeStates, index)
-                                    border.color: Qt.lighter(nodeColor(monitor.mixNodeStates, index), 1.3)
-                                    border.width: 2
-                                    anchors.horizontalCenter: parent.horizontalCenter
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        font.family: root.monoFont; font.pixelSize: 13; font.bold: true
-                                        color: "#000"
-                                        text: "N" + index
-                                    }
-                                }
-                                Rectangle {
-                                    visible: index === 0
-                                    width: giftLabel.implicitWidth + 8; height: 14; radius: 4
-                                    color: monitor.gifterMounted ? root.accent : root.textTertiary
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    Text {
-                                        id: giftLabel
-                                        anchors.centerIn: parent
-                                        font.family: root.monoFont; font.pixelSize: 8; font.bold: true
-                                        color: "#000"
-                                        text: "GIFTER"
-                                    }
-                                }
-                                Text {
-                                    visible: index !== 0
-                                    font.family: root.monoFont; font.pixelSize: 8
-                                    color: root.textTertiary
-                                    text: "relay"
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
-                            }
-                        }
-                    }
-
-                    // Connection line under the nodes
-                    Rectangle {
-                        Layout.alignment: Qt.AlignHCenter
-                        width: 4 * 44 + 3 * 12; height: 2; radius: 1
-                        color: {
-                            try {
-                                var nodes = JSON.parse(monitor.mixNodeStates)
-                                var allGreen = nodes.every(function(n) { return n.lez && n.kad })
-                                if (allGreen) return root.accent
-                                var anyMounted = nodes.some(function(n) { return n.mounted })
-                                if (anyMounted) return root.yellow
-                            } catch(e) {}
-                            return root.border
-                        }
-                    }
-                }
-
-                // ── Separator ──
-                Rectangle { width: 1; Layout.fillHeight: true; color: root.border }
-
-                // ── Gifter stats ──
-                ColumnLayout {
-                    Layout.preferredWidth: 100
-                    spacing: 4
-                    Text { font.family: root.monoFont; font.pixelSize: 11; font.bold: true; color: root.textSecond; text: "GIFTER" }
-                    Text { font.family: root.monoFont; font.pixelSize: 10; color: root.accent; text: "✓ " + (monitor.gifterMounted ? "mounted" : "---") }
-                    Text { font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond; text: "queue: " + monitor.gifterQueueDepth }
-                }
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // MESSAGE FLOW: Sender ──→ ←── Receiver
-        // ═══════════════════════════════════════════════════════════
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            spacing: 0
-
-            // ── Sender panel ──
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: bgSecondary
-                radius: 6
-                clip: true
-
-                property string role: "sender"
-                property string phase: monitor.senderPhase
-                property int optLeaf: monitor.senderOptLeaf
-                property int authLeaf: monitor.senderAuthLeaf
-                property bool corrected: monitor.senderLeafCorrected
-                property int peers: monitor.senderPeers
-                property bool mixRdy: monitor.senderMixReady
-                property int pool: monitor.senderMixPool
-                property int out_: monitor.senderMsgOut
-                property int in_: monitor.senderMsgIn
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 8
-
-                    // Header
-                    RowLayout {
-                        spacing: 8
-                        Text { font.family: root.monoFont; font.pixelSize: 16; font.bold: true; color: root.textPrimary; text: "SENDER" }
-                        Rectangle {
-                            width: sLabel.implicitWidth + 12; height: 20; radius: 10
-                            color: monitor.senderPhase === "---" ? root.textTertiary :
-                                   (monitor.senderPhase === "msg_sent" ? root.accent :
-                                   (monitor.senderPhase.indexOf("conf") >= 0 ? root.blue : root.yellow))
-                            Text { id: sLabel; anchors.centerIn: parent; font.family: root.monoFont; font.pixelSize: 9; font.bold: true; color: "#FFF"
-                                text: monitor.senderPhase === "---" ? "WAITING" : monitor.senderPhase.toUpperCase() }
-                        }
-                    }
-
-                    // Phase timeline
-                    Row {
-                        spacing: 0
-                        Repeater {
-                            model: ["init", "start", "reg", "opt", "conf", "ready", "intro", "send"]
-                            Row {
-                                spacing: 0
-                                property var allPhases: ["init", "start", "request", "opt", "conf", "ready", "intro_emitted", "msg_sent"]
-                                property int currentIdx: allPhases.indexOf(monitor.senderPhase.split(":")[0])
-                                Rectangle {
-                                    width: 10; height: 10; radius: 5
-                                    color: index < currentIdx ? root.accent : (index === currentIdx ? root.yellow : root.border)
-                                    border.color: index <= currentIdx ? Qt.lighter(color, 1.3) : "transparent"; border.width: 1
-                                    scale: index === currentIdx ? 1.3 : 1.0
-                                    Behavior on scale { NumberAnimation { duration: 200 } }
-                                }
-                                Rectangle {
-                                    visible: index < 7
-                                    width: 16; height: 2; color: index < currentIdx ? root.accent : root.border
-                                    anchors.verticalCenter: parent.children[0].verticalCenter
-                                }
-                            }
-                        }
-                    }
-
-                    // RLN + Network
-                    Text { font.family: root.monoFont; font.pixelSize: 10; color: parent.parent.corrected ? root.yellow : (parent.parent.optLeaf >= 0 && parent.parent.optLeaf === parent.parent.authLeaf ? root.accent : root.textSecond)
-                        text: "RLN " + (parent.parent.authLeaf >= 0 ? "leaf " + parent.parent.authLeaf + " ✓" : (parent.parent.optLeaf >= 0 ? "leaf " + parent.parent.optLeaf + " ⏳" : "not registered")) }
-                    Text { font.family: root.monoFont; font.pixelSize: 10; color: parent.parent.mixRdy ? root.accent : root.textSecond
-                        text: "NET " + parent.parent.peers + " peers" + (parent.parent.mixRdy ? " · mix ✓ pool " + parent.parent.pool : "") }
-
-                    Item { Layout.fillHeight: true }
-                }
-            }
-
-            // ── Message flow arrows (large, central) ──
-            Item {
-                Layout.preferredWidth: 80
-                Layout.fillHeight: true
-
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    spacing: 4
-
-                    // Sent count (large)
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 24; font.bold: true
-                        color: monitor.senderMsgOut > 0 ? root.accent : root.textTertiary
-                        text: monitor.senderMsgOut > 0 ? String(monitor.senderMsgOut) : "0"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond
-                        text: "SENT →"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-
-                    // Separator
-                    Rectangle { width: 40; height: 1; color: root.border; Layout.alignment: Qt.AlignHCenter }
-
-                    // Received count (large)
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 24; font.bold: true
-                        color: monitor.receiverMsgIn > 0 ? root.accent : root.textTertiary
-                        text: monitor.receiverMsgIn > 0 ? String(monitor.receiverMsgIn) : "0"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 10; color: root.textSecond
-                        text: "← RECV"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-
-                    // Separator
-                    Rectangle { width: 40; height: 1; color: root.border; Layout.alignment: Qt.AlignHCenter }
-
-                    // Reply count
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 16; font.bold: true
-                        color: monitor.senderMsgIn > 0 ? root.blue : root.textTertiary
-                        text: monitor.senderMsgIn > 0 ? String(monitor.senderMsgIn) : "0"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-                    Text {
-                        font.family: root.monoFont; font.pixelSize: 9; color: root.textSecond
-                        text: "← REPLY"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-                }
-            }
-
-            // ── Receiver panel ──
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: bgSecondary
-                radius: 6
-                clip: true
-
-                property string role: "receiver"
-                property string phase: monitor.receiverPhase
-                property int optLeaf: monitor.receiverOptLeaf
-                property int authLeaf: monitor.receiverAuthLeaf
-                property bool corrected: monitor.receiverLeafCorrected
-                property int peers: monitor.receiverPeers
-                property bool mixRdy: monitor.receiverMixReady
-                property int pool: monitor.receiverMixPool
-                property int out_: monitor.receiverMsgOut
-                property int in_: monitor.receiverMsgIn
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 8
-
-                    RowLayout {
-                        spacing: 8
-                        Text { font.family: root.monoFont; font.pixelSize: 16; font.bold: true; color: root.textPrimary; text: "RECEIVER" }
-                        Rectangle {
-                            width: rLabel.implicitWidth + 12; height: 20; radius: 10
-                            color: monitor.receiverPhase === "---" ? root.textTertiary :
-                                   (monitor.receiverPhase === "msg_received" ? root.accent :
-                                   (monitor.receiverPhase.indexOf("conf") >= 0 ? root.blue : root.yellow))
-                            Text { id: rLabel; anchors.centerIn: parent; font.family: root.monoFont; font.pixelSize: 9; font.bold: true; color: "#FFF"
-                                text: monitor.receiverPhase === "---" ? "WAITING" : monitor.receiverPhase.toUpperCase() }
-                        }
-                    }
-
-                    Row {
-                        spacing: 0
-                        Repeater {
-                            model: ["init", "start", "reg", "opt", "conf", "ready", "accept", "recv"]
-                            Row {
-                                spacing: 0
-                                property var allPhases: ["init", "start", "request", "opt", "conf", "ready", "intro_accepted", "msg_received"]
-                                property int currentIdx: allPhases.indexOf(monitor.receiverPhase.split(":")[0])
-                                Rectangle {
-                                    width: 10; height: 10; radius: 5
-                                    color: index < currentIdx ? root.accent : (index === currentIdx ? root.yellow : root.border)
-                                    border.color: index <= currentIdx ? Qt.lighter(color, 1.3) : "transparent"; border.width: 1
-                                    scale: index === currentIdx ? 1.3 : 1.0
-                                    Behavior on scale { NumberAnimation { duration: 200 } }
-                                }
-                                Rectangle {
-                                    visible: index < 7
-                                    width: 16; height: 2; color: index < currentIdx ? root.accent : root.border
-                                    anchors.verticalCenter: parent.children[0].verticalCenter
-                                }
-                            }
-                        }
-                    }
-
-                    Text { font.family: root.monoFont; font.pixelSize: 10; color: parent.parent.corrected ? root.yellow : (parent.parent.optLeaf >= 0 && parent.parent.optLeaf === parent.parent.authLeaf ? root.accent : root.textSecond)
-                        text: "RLN " + (parent.parent.authLeaf >= 0 ? "leaf " + parent.parent.authLeaf + " ✓" : (parent.parent.optLeaf >= 0 ? "leaf " + parent.parent.optLeaf + " ⏳" : "not registered")) }
-                    Text { font.family: root.monoFont; font.pixelSize: 10; color: parent.parent.mixRdy ? root.accent : root.textSecond
-                        text: "NET " + parent.parent.peers + " peers" + (parent.parent.mixRdy ? " · mix ✓ pool " + parent.parent.pool : "") }
-
-                    Item { Layout.fillHeight: true }
-                }
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // CHAIN EVENTS (with icons)
-        // ═══════════════════════════════════════════════════════════
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 160
-            color: bgSecondary
-            radius: 6
-
-            ColumnLayout {
-                anchors.fill: parent
                 anchors.margins: 8
-                spacing: 2
+                spacing: 0
 
-                Text { font.family: root.monoFont; font.pixelSize: 11; font.bold: true; color: root.textSecond; text: "CHAIN EVENTS" }
-
-                ListView {
+                // Sender correlation pane
+                ColumnLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    model: chainEvents
-                    clip: true
-                    spacing: 1
+                    spacing: 2
 
-                    delegate: Rectangle {
-                        width: ListView.view.width
-                        height: 16
-                        color: "transparent"
-                        radius: 2
+                    Text { font.family: root.monoFont; font.pixelSize: 11; font.bold: true; color: root.accent; text: "SENDER" }
 
-                        // Brief flash on new events
-                        Rectangle {
-                            anchors.fill: parent; radius: 2; color: root.accent; opacity: flashAnim.running ? 0.15 : 0
-                            SequentialAnimation on opacity { id: flashAnim; running: index === 0; loops: 1
-                                NumberAnimation { to: 0.2; duration: 100 }
-                                NumberAnimation { to: 0; duration: 500 }
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        model: senderCorrelation
+                        clip: true
+                        spacing: 1
+
+                        delegate: Rectangle {
+                            width: ListView.view.width
+                            height: 16
+                            color: "transparent"
+
+                            Rectangle {
+                                anchors.fill: parent; radius: 2; color: root.accent; opacity: 0
+                                SequentialAnimation on opacity { running: index === 0; loops: 1
+                                    NumberAnimation { to: 0.2; duration: 100 }
+                                    NumberAnimation { to: 0; duration: 500 }
+                                }
+                            }
+
+                            Row {
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
+                                Text { font.family: root.monoFont; font.pixelSize: 9; color: root.textTertiary; text: timestamp }
+                                Text { font.family: root.monoFont; font.pixelSize: 9; font.bold: true; color: root.accent; text: eventType }
+                                Text { font.family: root.monoFont; font.pixelSize: 9; color: root.textSecond; text: detail; elide: Text.ElideRight }
                             }
                         }
+                    }
+                }
 
-                        Row {
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 6
+                // Vertical separator
+                Rectangle { width: 1; Layout.fillHeight: true; color: root.border }
 
-                            // Icon
-                            Text {
-                                font.pixelSize: 10
-                                text: {
-                                    if (eventType === "TX_OK") return "✓"
-                                    if (eventType === "TX_FAIL" || eventType === "WALLET_ERR" || eventType === "REG_FAIL") return "✗"
-                                    if (eventType === "REGISTER" || eventType === "GIFTER_REQ") return "◆"
-                                    if (eventType === "ROOTS") return "◈"
-                                    if (eventType === "BUNDLE") return "◉"
-                                    if (eventType === "LEAF_FIX") return "⚠"
-                                    if (eventType === "GIFTER_AUTHFAIL") return "⛔"
-                                    return "·"
-                                }
-                                color: {
-                                    if (eventType === "TX_FAIL" || eventType === "WALLET_ERR" || eventType === "REG_FAIL" || eventType === "GIFTER_AUTHFAIL") return root.red
-                                    if (eventType === "REGISTER") return root.accent
-                                    if (eventType === "LEAF_FIX") return root.yellow
-                                    if (eventType === "BUNDLE") return root.blue
-                                    return root.textTertiary
+                // Verifier/node correlation pane
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 2
+
+                    Text { font.family: root.monoFont; font.pixelSize: 11; font.bold: true; color: root.yellow; text: "VERIFIER NODES" }
+
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        model: nodeCorrelation
+                        clip: true
+                        spacing: 1
+
+                        delegate: Rectangle {
+                            width: ListView.view.width
+                            height: 16
+                            color: "transparent"
+
+                            Rectangle {
+                                anchors.fill: parent; radius: 2; color: root.yellow; opacity: 0
+                                SequentialAnimation on opacity { running: index === 0; loops: 1
+                                    NumberAnimation { to: 0.2; duration: 100 }
+                                    NumberAnimation { to: 0; duration: 500 }
                                 }
                             }
 
-                            Text {
-                                font.family: root.monoFont; font.pixelSize: 10
-                                color: root.textTertiary
-                                text: timestamp
-                            }
-                            Text {
-                                font.family: root.monoFont; font.pixelSize: 10; font.bold: true
-                                color: {
-                                    if (eventType === "TX_FAIL" || eventType === "WALLET_ERR" || eventType === "REG_FAIL") return root.red
-                                    if (eventType === "REGISTER") return root.accent
-                                    if (eventType === "LEAF_FIX") return root.yellow
-                                    return root.textSecond
+                            Row {
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
+                                Text { font.family: root.monoFont; font.pixelSize: 9; color: root.textTertiary; text: timestamp }
+                                Text { font.family: root.monoFont; font.pixelSize: 9; font.bold: true
+                                    color: eventType.indexOf("VERIFY") >= 0 ? root.accent : (eventType.indexOf("AUTH") >= 0 ? root.red : root.yellow)
+                                    text: eventType
                                 }
-                                text: eventType
-                            }
-                            Text {
-                                font.family: root.monoFont; font.pixelSize: 10
-                                color: root.textSecond
-                                text: detail
-                                elide: Text.ElideRight
+                                Text { font.family: root.monoFont; font.pixelSize: 9; color: root.textSecond; text: detail; elide: Text.ElideRight }
                             }
                         }
                     }
