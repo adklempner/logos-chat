@@ -540,10 +540,22 @@ if [ -z "${DELIVERY_EXTRA_LIB:-}" ]; then
     # ng60yfx... 48MB) lack gifter mount and produce 14/15 PASS at best with
     # receiver-message-delivery the only fail. The local build is 53MB+.
     if [ ! -f "$DELIVERY_DIR/build/liblogosdelivery.$EXT" ]; then
-        # Fresh clone — no local build yet. Auto-invoke `make liblogosdelivery`
+        # Fresh clone — no local build yet. Auto-clone + `make liblogosdelivery`
         # in vendor/logos-delivery rather than falling through to a stale
         # /nix/store hit that lacks gifter mount and would silently produce a
-        # 14/15-PASS run. Takes ~5-10 min on first call; subsequent runs reuse.
+        # 14/15-PASS run. The repo is NOT a git submodule of logos-delivery-
+        # module (vendor/* is .gitignored there); the canonical setup clones
+        # adklempner/logos-delivery into this path on first use. Takes ~5-10
+        # min on first call; subsequent runs reuse the local build.
+        if [ ! -d "$DELIVERY_DIR/.git" ]; then
+            log "  Cloning vendor/logos-delivery..."
+            DELIVERY_REPO="${DELIVERY_REPO:-git@github.com:adklempner/logos-delivery.git}"
+            DELIVERY_BRANCH="${DELIVERY_BRANCH:-feat/sim-rln-gifter-auth-debug}"
+            git clone -b "$DELIVERY_BRANCH" "$DELIVERY_REPO" "$DELIVERY_DIR" 2>&1 | tail -3 \
+                || die "git clone $DELIVERY_REPO failed"
+            (cd "$DELIVERY_DIR" && git submodule update --init --recursive 2>&1 | tail -3) \
+                || die "delivery submodule init failed"
+        fi
         log "  Local liblogosdelivery.$EXT missing — building via make..."
         (cd "$DELIVERY_DIR" && make -j4 liblogosdelivery 2>&1 | tail -3) \
             || die "make liblogosdelivery failed in $DELIVERY_DIR"
