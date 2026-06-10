@@ -21,6 +21,8 @@ First run: **~30-45 min** (nix builds the logoscore CLI, a custom `liblogosdeliv
 
 On x86_64 Linux this should work out of the box. On aarch64 Linux, guest zkVM binaries must be pre-built on another platform (rzup doesn't support aarch64-linux) and the wallet module nix build needs `RISC0_SKIP_BUILD_KERNELS=1`.
 
+`liblogosdelivery.dylib` and `liblogoschat.dylib` (the Nim shared libs behind the C++ plugins) are auto-built via `make liblogosdelivery` / `make liblogoschat` when missing — fresh clones don't need a separate `bash setup_and_run.sh` first. Set `DELIVERY_EXTRA_LIB` or `CHAT_EXTRA_LIB` to skip the auto-build.
+
 ### If `nix bundle` returns 403 (crates.io rate limit)
 
 The wallet and chat `.lgx` builds vendor Rust deps through `static.crates.io`; that endpoint occasionally 403s on fresh clones. The fix is to point the sim at an already-cached `.lgx` in the nix store:

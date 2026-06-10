@@ -539,6 +539,15 @@ if [ -z "${DELIVERY_EXTRA_LIB:-}" ]; then
     # mix"). The nix-store builds of logos-delivery-module-lib (e.g.
     # ng60yfx... 48MB) lack gifter mount and produce 14/15 PASS at best with
     # receiver-message-delivery the only fail. The local build is 53MB+.
+    if [ ! -f "$DELIVERY_DIR/build/liblogosdelivery.$EXT" ]; then
+        # Fresh clone — no local build yet. Auto-invoke `make liblogosdelivery`
+        # in vendor/logos-delivery rather than falling through to a stale
+        # /nix/store hit that lacks gifter mount and would silently produce a
+        # 14/15-PASS run. Takes ~5-10 min on first call; subsequent runs reuse.
+        log "  Local liblogosdelivery.$EXT missing — building via make..."
+        (cd "$DELIVERY_DIR" && make -j4 liblogosdelivery 2>&1 | tail -3) \
+            || die "make liblogosdelivery failed in $DELIVERY_DIR"
+    fi
     if [ -f "$DELIVERY_DIR/build/liblogosdelivery.$EXT" ]; then
         DELIVERY_EXTRA_LIB="$DELIVERY_DIR/build/liblogosdelivery.$EXT"
     else
@@ -549,6 +558,14 @@ fi
 
 # chat_module has the same flat-namespace gap on liblogoschat.dylib.
 if [ -z "${CHAT_EXTRA_LIB:-}" ]; then
+    if [ ! -f "$LOGOS_CHAT_DIR/build/liblogoschat.$EXT" ]; then
+        # Same auto-build pattern as liblogosdelivery — the Nim chat lib
+        # is produced by `make liblogoschat` from $LOGOS_CHAT_DIR. Skipping
+        # this on a fresh clone falls through to a stale /nix/store hit.
+        log "  Local liblogoschat.$EXT missing — building via make..."
+        (cd "$LOGOS_CHAT_DIR" && make update && make liblogoschat 2>&1 | tail -3) \
+            || die "make liblogoschat failed in $LOGOS_CHAT_DIR"
+    fi
     if [ -f "$LOGOS_CHAT_DIR/build/liblogoschat.$EXT" ]; then
         CHAT_EXTRA_LIB="$LOGOS_CHAT_DIR/build/liblogoschat.$EXT"
     else
