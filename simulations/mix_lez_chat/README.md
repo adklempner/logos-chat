@@ -189,6 +189,8 @@ Override defaults via environment:
 | `SIM_DELIVERY_TIMEOUT` | `120 / 300` | Max seconds to wait for receiver to see a chat event |
 | `SIM_NODE_STARTUP_SLEEP` | `10 / 30` | Spacing between mix node startups |
 | `WALLET_LGX` / `RLN_LGX` / `DELIVERY_LGX` / `CHAT_LGX` | unset | Skip the corresponding `nix bundle` and use a pre-built `.lgx` from `/nix/store`. Useful when crates.io 403s on a fresh build (see "If `nix bundle` returns 403" above) |
+| `LGX_CACHE_DIR` | `~/.cache/sim-lgx` | Where the sim parks indirect GC roots for each module's bundle output. First run builds + pins; subsequent runs resolve the symlink and skip `nix bundle` entirely (~10 min → ~5 s for the bundling phase). Pins survive `nix-collect-garbage`. |
+| `SIM_REBUILD_LGX` | unset | Set to `1` to invalidate the `LGX_CACHE_DIR` pins and force a fresh `nix bundle` per module. Use after editing module sources. |
 
 Example — fast iteration with verbose logging:
 

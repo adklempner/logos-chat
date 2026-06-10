@@ -463,8 +463,28 @@ LOGOSCORE="${LOGOSCORE:-$(nix build github:logos-co/logos-logoscore-cli --no-lin
 # manifest.json from each module subdir, not raw .dylib filenames.
 log "  Bundling .lgx packages..."
 # Optional `extra_args...` flow through to nix bundle (e.g. --override-input).
+#
+# Bundles are pinned under $LGX_CACHE_DIR (default ~/.cache/sim-lgx) as
+# indirect GC roots so nix-collect-garbage can't blow them away between
+# runs. On re-entry we resolve the symlink and reuse the cached .lgx
+# directly, skipping nix bundle entirely. Set SIM_REBUILD_LGX=1 to force
+# a fresh bundle (e.g. after editing module sources).
+LGX_CACHE_DIR="${LGX_CACHE_DIR:-$HOME/.cache/sim-lgx}"
+mkdir -p "$LGX_CACHE_DIR"
 lgx_from() {
     local dir="$1" attr="$2"; shift 2
+    local cache_key="${dir//\//_}__${attr}"
+    local gc_link="$LGX_CACHE_DIR/$cache_key"
+    if [ -z "${SIM_REBUILD_LGX:-}" ] && [ -L "$gc_link" ]; then
+        local cached_path cached_lgx
+        cached_path=$(readlink "$gc_link")
+        cached_lgx=$(find "$cached_path" -maxdepth 1 -name "*.lgx" 2>/dev/null | head -1)
+        if [ -f "$cached_lgx" ]; then
+            printf '%s' "$cached_lgx"
+            return 0
+        fi
+        rm -f "$gc_link"
+    fi
     local out_link store_path lgx
     out_link=$(mktemp -d)/result
     (cd "$dir" && nix bundle --bundler github:logos-co/nix-bundle-lgx "$@" --out-link "$out_link" ".#$attr" >/dev/null 2>&1) \
@@ -473,6 +493,7 @@ lgx_from() {
     lgx=$(find "$store_path" -maxdepth 1 -name "*.lgx" | head -1)
     rm -f "$out_link"; rmdir "$(dirname "$out_link")" 2>/dev/null || true
     [ -f "$lgx" ] || die "no .lgx in bundle output for $attr (looked at $store_path)"
+    nix-store --add-root "$gc_link" --indirect -r "$store_path" >/dev/null 2>&1 || true
     printf '%s' "$lgx"
 }
 # Per-module overrides let dev shortcut to a previously-built .lgx in
