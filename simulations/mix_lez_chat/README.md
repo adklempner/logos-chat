@@ -9,7 +9,7 @@ Two logoscore instances (sender + receiver) establish an X3DH key agreement via 
 **Prereqs:** nix (with flakes), Docker, cargo-risczero, SSH access to GitHub.
 
 ```bash
-git clone -b feat/sim-rln-gifter-auth-v2 git@github.com:logos-messaging/logos-chat.git
+git clone -b feat/sim-rln-gifter-auth-v2 git@github.com:adklempner/logos-chat.git
 cd logos-chat
 git submodule update --init --recursive
 bash simulations/mix_lez_chat/demo_step.sh
@@ -21,7 +21,7 @@ First run: **~30-45 min** (nix builds the logoscore CLI, a custom `liblogosdeliv
 
 On x86_64 Linux this should work out of the box. On aarch64 Linux, guest zkVM binaries must be pre-built on another platform (rzup doesn't support aarch64-linux) and the wallet module nix build needs `RISC0_SKIP_BUILD_KERNELS=1`.
 
-`liblogosdelivery.dylib` and `liblogoschat.dylib` (the Nim shared libs behind the C++ plugins) are auto-built via `make liblogosdelivery` / `make liblogoschat` when missing — fresh clones don't need a separate `bash setup_and_run.sh` first. Set `DELIVERY_EXTRA_LIB` or `CHAT_EXTRA_LIB` to skip the auto-build.
+`liblogosdelivery.dylib` and `liblogoschat.dylib` (the Nim shared libs behind the C++ plugins) are auto-built via `make liblogosdelivery` / `make liblogoschat` when missing — fresh clones don't need a separate `bash setup_and_run.sh` first. `vendor/logos-delivery` is also auto-cloned (it's not a git submodule of `logos-delivery-module` — `vendor/*` is `.gitignored` there). Override the clone source with `DELIVERY_REPO` / `DELIVERY_BRANCH`, or skip auto-build entirely with `DELIVERY_EXTRA_LIB` / `CHAT_EXTRA_LIB` pointed at a pre-built dylib.
 
 ### If `nix bundle` returns 403 (crates.io rate limit)
 
@@ -40,7 +40,7 @@ If neither cache hit, run `nix-collect-garbage --delete-older-than 7d` to free d
 **Prereqs:** Docker with 24 GB RAM allocated.
 
 ```bash
-git clone -b feat/sim-rln-gifter-auth-v2 git@github.com:logos-messaging/logos-chat.git
+git clone -b feat/sim-rln-gifter-auth-v2 git@github.com:adklempner/logos-chat.git
 cd logos-chat && bash scripts/run_in_docker.sh
 ```
 
@@ -57,7 +57,7 @@ Each sim run: ~10 min (clone + sequencer build + sim). To force a local image re
 3. Mix nodes generated RLN proofs (≥1 across nodes 1-3)
 4. A mix node verified another node's proof (≥1 across nodes 1-3)
 
-A passing run also reports `Delivery check after Ns (messages: N/expected ≥1)` if mix forward delivery completed end-to-end; local sims are deterministic and typically deliver, testnet sims sometimes time out at the receiver even when all 4 markers fire (mix-lightpush flake — independent of the gifter protocol).
+A passing run also reports `Delivery check after Ns (messages: N/expected ≥1)` if mix forward delivery completed end-to-end. Local sims are deterministic and typically deliver 16 messages; testnet sims currently hit a self-verify race ("Expected one of the provided roots") on the sender's first publish — markers 1+2 fire but 3a/3b stay at 0 and delivery times out. The race is in the mix spam-protection plugin's `cachedProof` ↔ `validRoots` window divergence, addressed partially in `mix-rln-spam-protection-plugin` `d06aad7` (atomic root+proof refresh in `pollLoop`) but not yet fully closed.
 
 **`run_simulation_lgx.sh` (no SIM_DEMO_MODE):** the deeper 15-check verification block — 4 mix nodes mounted, gifter service mounted, LEZ RLN active, both chat clients initialised/started/mix-mounted, intro bundle created, sender publishes, receiver delivers ≥1 chat event. Use this when debugging the lower layers.
 
@@ -191,6 +191,9 @@ Override defaults via environment:
 | `SIM_DELIVERY_TIMEOUT` | `120 / 300` | Max seconds to wait for receiver to see a chat event |
 | `SIM_NODE_STARTUP_SLEEP` | `10 / 30` | Spacing between mix node startups |
 | `WALLET_LGX` / `RLN_LGX` / `DELIVERY_LGX` / `CHAT_LGX` | unset | Skip the corresponding `nix bundle` and use a pre-built `.lgx` from `/nix/store`. Useful when crates.io 403s on a fresh build (see "If `nix bundle` returns 403" above) |
+| `DELIVERY_EXTRA_LIB` / `CHAT_EXTRA_LIB` | unset | Skip the `make liblogosdelivery` / `make liblogoschat` auto-build and use the supplied dylib path directly. Useful when iterating on the C++ plugin layer without touching Nim sources |
+| `DELIVERY_REPO` | `git@github.com:adklempner/logos-delivery.git` | Where to clone `vendor/logos-delivery` from when missing (it's `.gitignored` inside `logos-delivery-module`, so `git submodule update --init --recursive` doesn't populate it) |
+| `DELIVERY_BRANCH` | `feat/sim-rln-gifter-auth-debug` | Branch checked out from `DELIVERY_REPO` |
 | `LGX_CACHE_DIR` | `~/.cache/sim-lgx` | Where the sim parks indirect GC roots for each module's bundle output. First run builds + pins; subsequent runs resolve the symlink and skip `nix bundle` entirely (~10 min → ~5 s for the bundling phase). Pins survive `nix-collect-garbage`. |
 | `SIM_REBUILD_LGX` | unset | Set to `1` to invalidate the `LGX_CACHE_DIR` pins and force a fresh `nix bundle` per module. Use after editing module sources. |
 
