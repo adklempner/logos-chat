@@ -44,7 +44,7 @@ fi
 #    then logos-lez-rln's nested submodules selectively.
 log "Initializing top-level submodules..."
 git submodule update --init
-(cd vendor/nwaku && git submodule update --init --recursive)
+(cd vendor/logos-delivery && git submodule update --init --recursive)
 (cd vendor/nimbus-build-system && git submodule update --init --recursive)
 
 # Init nested submodules inside vendor/logos-lez-rln non-recursively

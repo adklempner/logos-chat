@@ -118,7 +118,7 @@ What stays shared vs. fresh:
 ```bash
 git clone --branch feat/sim-rln-gifter-auth-v2 <repo> logos-chat
 cd logos-chat
-git submodule update --init vendor/logos-lez-rln vendor/nwaku vendor/nimbus-build-system vendor/nim-protobuf-serialization vendor/npeg vendor/blake2 vendor/libchat vendor/nim-ffi
+git submodule update --init vendor/logos-lez-rln vendor/logos-delivery vendor/nimbus-build-system vendor/nim-protobuf-serialization vendor/npeg vendor/blake2 vendor/libchat vendor/nim-ffi
 (cd vendor/logos-lez-rln && git submodule update --init logos-delivery-module)
 (cd vendor/logos-lez-rln/logos-delivery-module && git submodule update --init --recursive vendor/logos-delivery)
 ```

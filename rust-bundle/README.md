@@ -25,4 +25,4 @@ From the project root, use the `build-bundle` Makefile target, which handles thi
 | Crate | Path |
 |-------|------|
 | `libchat` | `vendor/libchat/conversations` |
-| `rln` | `vendor/nwaku/vendor/zerokit/rln` |
+| `rln` | `vendor/logos-delivery/vendor/zerokit/rln` |

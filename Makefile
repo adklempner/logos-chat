@@ -1,7 +1,7 @@
 export BUILD_SYSTEM_DIR := vendor/nimbus-build-system
-export EXCLUDED_NIM_PACKAGES := vendor/nwaku/vendor/nim-dnsdisc/vendor \
-								vendor/nwaku/vendor/nimbus-build-system \
-								vendor/nwaku/vendor/nim-ffi \
+export EXCLUDED_NIM_PACKAGES := vendor/logos-delivery/vendor/nim-dnsdisc/vendor \
+								vendor/logos-delivery/vendor/nimbus-build-system \
+								vendor/logos-delivery/vendor/nim-ffi \
 								vendor/nim-sds/vendor \
 								vendor/logos-lez-rln
 LINK_PCRE := 0
@@ -63,7 +63,7 @@ clean:
 nimbus-build-system-nimble-dir:
 	NIMBLE_DIR="$(CURDIR)/$(NIMBLE_DIR)" \
 	PWD_CMD="$(PWD)" \
-	$(CURDIR)/vendor/nwaku/scripts/generate_nimble_links.sh
+	$(CURDIR)/vendor/logos-delivery/scripts/generate_nimble_links.sh
 
 ## Possible values: prod; debug
 TARGET ?= prod
@@ -93,7 +93,7 @@ mix-librln: | $(MIX_LIBRLN_FILE)
 
 $(MIX_LIBRLN_FILE):
 	echo -e $(BUILD_MSG) "$@" && \
-		$(CURDIR)/vendor/nwaku/scripts/build_rln_mix.sh \
+		$(CURDIR)/vendor/logos-delivery/scripts/build_rln_mix.sh \
 		$(CURDIR)/build/zerokit_$(MIX_LIBRLN_VERSION) \
 		$(MIX_LIBRLN_VERSION) \
 		$(MIX_LIBRLN_FILE) && \
@@ -106,13 +106,13 @@ $(MIX_LIBRLN_FILE):
 .PHONY: build-rust-bundle
 build-rust-bundle:
 	@echo "Building Rust bundle (libchat + rln)"
-	$(MAKE) -C vendor/nwaku librln
+	$(MAKE) -C vendor/logos-delivery librln
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo build --release --manifest-path rust-bundle/Cargo.toml
 	@echo "Bundle library: $(RUST_BUNDLE_LIB)"
 
 build-waku-nat:
 	@echo "Start building waku nat-libs"
-	$(MAKE) -C vendor/nwaku nat-libs
+	$(MAKE) -C vendor/logos-delivery nat-libs
 	@echo "Completed building nat-libs"
 
 .PHONY: tests
