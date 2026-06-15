@@ -5,6 +5,10 @@ Working notes for the full simulation pipeline (`run_simulation_lgx.sh` and the
 that occur, and how success/failure is determined. Line references point at
 `run_simulation_lgx.sh` unless otherwise noted.
 
+This file is the deep-dive reference. Setup and operating instructions live in
+`README.md`. Read this when something's broken and you need to know which stage
+owns the failure.
+
 ---
 
 ## Stage 0 — Workspace & prerequisites
@@ -17,16 +21,21 @@ that occur, and how success/failure is determined. Line references point at
   `logos-delivery-module` (delivery C++ module).
 - `logos-delivery-module/vendor/logos-delivery` — Nim Waku/mix stack
   (`liblogosdelivery`). NOT a real submodule (`vendor/*` is gitignored there);
-  auto-cloned from `DELIVERY_REPO`/`DELIVERY_BRANCH` on first run (lines 550-558).
+  auto-cloned from `DELIVERY_REPO`/`DELIVERY_BRANCH` on first run (~line 562).
 - Toolchains: nix (flakes), cargo + risc0 (`RISC0_DEV_MODE=1` is exported),
   Nim (via nimbus-build-system), Qt (logoscore), Docker (Linux path).
 
 **Processes**
 - `--fresh` removes `.sim_state/`; always: `pkill logos_host`, remove stale
-  `/tmp/logos_*` QtRO sockets (lines 320-322) — stale LocalServer sockets
+  `/tmp/logos_*` QtRO sockets (~line 320) — stale LocalServer sockets
   confuse capability_module lookups.
 - Repo discovery: `LEZ_RLN_DIR`, `CHAT_MODULE_DIR`, `DELIVERY_MODULE_DIR`
-  resolved from vendored paths or siblings (lines 16-30).
+  resolved from vendored paths or siblings (~lines 16-30).
+- `setup_from_scratch.sh` is sourced at the top of the script (~line 43)
+  so the per-build prep helpers (`patch_delivery_nimble_lock`,
+  `rename_libp2p_carcass`, `mirror_chat_nimbledeps`) are available to
+  the auto-build blocks in Stage 3. Each helper is idempotent — sourcing
+  defines them; calling them is a no-op once the per-step gate is satisfied.
 
 **Success / failure**
 - Hard `die` if `logos-lez-rln` can't be found.
@@ -113,7 +122,7 @@ wallet storage under `dev/` (local) or `testnet/` (persistent).
 ## Stage 3 — Building the logos-core modules & .lgx packages
 
 **Components**
-- `logoscore` CLI — `nix build github:logos-co/logos-logoscore-cli` (line 459).
+- `logoscore` CLI — `nix build github:logos-co/logos-logoscore-cli` (~line 470).
 - Four `.lgx` bundles via `nix bundle --bundler nix-bundle-lgx`:
   - **wallet** (`logos_execution_zone`) — built with `--override-input` chain:
     local `logos-execution-zone-module` (carries the `send_public_transaction`
@@ -128,12 +137,12 @@ wallet storage under `dev/` (local) or `testnet/` (persistent).
 - Nim shared libs built outside nix: `make liblogosdelivery` (in
   vendor/logos-delivery; auto-clone first if missing) and `make liblogoschat`
   (this repo). They're injected post-install because nix-bundle-lgx drops
-  `metadata.json:include[]` libs (lines 521-587).
+  `metadata.json:include[]` libs (~lines 530-600).
 
 **Processes**
 - `.lgx` outputs are pinned under `LGX_CACHE_DIR` (`~/.cache/sim-lgx`) as
   indirect nix GC roots; cache hit skips `nix bundle` (~10 min → ~5 s).
-  `SIM_REBUILD_LGX=1` invalidates after source edits (lines 472-498).
+  `SIM_REBUILD_LGX=1` invalidates after source edits (~lines 480-510).
 - Per-module env overrides `WALLET_LGX`/`RLN_LGX`/`DELIVERY_LGX`/`CHAT_LGX`
   short-circuit to a known-good store path — the crates.io 403 workaround.
 - `pick_lib_with_min_symbols` guards against stale 8-symbol
@@ -141,9 +150,39 @@ wallet storage under `dev/` (local) or `testnet/` (persistent).
   call); the local vendor build is preferred because nix-store builds lack
   the gifter mount code (→ 14/15 PASS ceiling).
 
+**Auto-build prep helpers (PR #3807 transition)**
+Before invoking `make liblogosdelivery` and `make liblogoschat`, the script
+calls helpers defined in `setup_from_scratch.sh`:
+- `patch_delivery_nimble_lock` — patches `vendor/logos-delivery/nimble.lock`
+  in place to work around a nimble 0.22.3 URL-mangling bug on two `#`-prefix
+  package versions PR #3807's lockfile ships with. Idempotent; greps for the
+  original sha1s before patching. Local-only edit; never committed upstream.
+- `rename_libp2p_carcass` — moves the stale
+  `vendor/nwaku/vendor/nim-libp2p` checkout aside. PR #3807 dropped the
+  submodule but the directory lingers in pre-PR-3807 working clones; the
+  chat's `config.nims` walker would otherwise pick it up before the
+  nimble-resolved v2.0.0 libp2p and compile would fail with
+  `EVP_PKEY undeclared`.
+- `mirror_chat_nimbledeps` — mirrors `nimbledeps/pkgs2/` from the
+  delivery-side build (where `make liblogosdelivery` populated it) into
+  `vendor/nwaku/` and strips the obsolete-pin libp2p/websock variants.
+  Required so the chat's nim build can resolve nwaku's nimble deps via
+  the search path.
+
+**`librln_mix` (PR #9 stateless rebuild)**
+- The chat Makefile no longer builds its own `librln_mix_v2.0.0.a` via
+  `vendor/nwaku/scripts/build_rln_mix.sh`. It instead copies the prebuilt
+  `vendor/logos-lez-rln/logos-delivery/librln_v2.0.2.a` (a side product of
+  step 2's `nix build .#logos-rln-module`) into
+  `build/librln_mix_v2.0.2.a`, then runs
+  `scripts/fix_mix_librln_dupes.sh` to localize cross-archive symbols
+  shared with `rust-bundle` (Rust std `_rust_eh_personality`,
+  `_ffi_c_string_free` from libchat's double-ratchets — also the reason
+  rust-bundle no longer imports `rln`).
+
 **Success / failure**
 - Each `nix bundle` failure → `die`. Missing dylib (17-symbol delivery lib,
-  chat lib) → `die`. All four `.lgx` must exist (lines 588-591).
+  chat lib) → `die`. All four `.lgx` must exist (~line 605).
 - Known failure: crates.io 403 on `librln-mix-2.0.0-vendor-staging` → use the
   `.lgx` env pins or populate the vendor-staging path manually.
 
@@ -383,7 +422,11 @@ All checks are **log greps** against `.sim_state/*.log` (ANSI-stripped).
 | 1 | Gifter received request | `handling RLN gifter request` | node0 | gifter codec dial + auth passed |
 | 2 | Sender got membership | `RLN membership granted\|Registered via RLN gifter` | sender | full gifter round-trip incl. on-chain tx |
 | 3a | Proofs generated | `Generated RLN proof successfully` ≥1 | nodes 0-3 | at least one hop wrapped a packet (implies sender publish reached mix) |
-| 3b | Proof verified | `Spam protection proof verified successfully` ≥1 | nodes 0-3 | a hop accepted another node's proof (epoch+root+zkSNARK+nullifier all passed) |
+| 3b | Proof verified | `Proof verified successfully` ≥1 | nodes 0-3 | a hop accepted another node's proof (epoch+root+zkSNARK+nullifier all passed) |
+
+PR #9 (mix-rln plugin stateless backend) renamed the verification log line —
+the old `Spam protection proof verified successfully` is now just
+`Proof verified successfully`. The sim's grep accepts the new form.
 
 `DEMO PASS: all 4 markers fired` → exit 0. Markers 3a/3b at 0 with 1+2
 passing = the self-verify / proof-staleness class of failure (sender's first
@@ -417,7 +460,12 @@ non-deterministic (slot allocation, confirmation, circuit timing).
 | `Testnet unreachable` | 1 | RPC down / network |
 | `DeserializeUnexpectedEnd` | 1 | lssa rev mismatch vs lez-rln pin |
 | `KeyNotFoundError` at register_member | 2 | stale run_setup binary or stale payment-account sidecar |
+| `supply holding may be out of funds` | 2 | stale sequencer process / state from prior run — kill `lssa`/`sequencer` + wipe `lssa/rocksdb` + `dev/storage.json` |
 | txs hash but state never changes | 2 | fresh-tree-on-testnet bootstrap gap — use shipped tree |
+| `nimble setup` fails on `bearssl_pkey_decoder` with `git -C ... init failed` | 3 | nimble 0.22.3 URL-mangling bug — `patch_delivery_nimble_lock` handles this; if reached manually, see `setup_from_scratch.sh` |
+| `Error: cannot open file: brokers/broker_context` | 3 | chat's nim path doesn't see nwaku's nimble deps — `mirror_chat_nimbledeps` handles this |
+| `EVP_PKEY undeclared` in libp2p `certificate_ffi.nim` | 3 | OLD libp2p carcass shadowing the nimble-resolved v2.0.0 — `rename_libp2p_carcass` handles this |
+| `duplicate symbol _rust_eh_personality` at link | 3 | librln_mix + rust-bundle each embed their own Rust std — `scripts/fix_mix_librln_dupes.sh` localizes runtime symbols including the rcgu objects system nm can't parse |
 | `nix bundle` 403 | 3 | crates.io rate limit → `.lgx` env pins |
 | `symbol not found: _logosdelivery_*` | 3/4 | Nim dylib missing/stale (8-symbol build) |
 | client hangs at connect, no diagnostic | 4 | TMPDIR mismatch or stale `/tmp/logos_*` |
@@ -428,3 +476,4 @@ non-deterministic (slot allocation, confirmation, circuit timing).
 | `Self-verify ... Expected one of the provided roots` | 7 | RLN proof/window staleness (get_merkle_proofs non-atomicity / stalled pollLoop) |
 | `Mix lightpush timed out` | 7 | SURB reply missed 60s deadline; forward path may still have delivered |
 | markers 1+2 pass, 3a/3b zero | 8 | sender's first publish dropped locally (proof gen/self-verify) |
+| marker 3b shows 0 despite plenty of generations | 8 | if grepping logs manually with the legacy `Spam protection proof verified successfully`, switch to `Proof verified successfully` — PR #9 renamed it |

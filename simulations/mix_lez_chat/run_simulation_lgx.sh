@@ -561,7 +561,7 @@ if [ -z "${DELIVERY_EXTRA_LIB:-}" ]; then
         if [ ! -d "$DELIVERY_DIR/.git" ]; then
             log "  Cloning vendor/logos-delivery..."
             DELIVERY_REPO="${DELIVERY_REPO:-git@github.com:adklempner/logos-delivery.git}"
-            DELIVERY_BRANCH="${DELIVERY_BRANCH:-feat/sim-rln-gifter-auth-debug}"
+            DELIVERY_BRANCH="${DELIVERY_BRANCH:-rebase/lez-rln-gifter-on-3807}"
             git clone -b "$DELIVERY_BRANCH" "$DELIVERY_REPO" "$DELIVERY_DIR" 2>&1 | tail -3 \
                 || die "git clone $DELIVERY_REPO failed"
             (cd "$DELIVERY_DIR" && git submodule update --init --recursive 2>&1 | tail -3) \
