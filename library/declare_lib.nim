@@ -1,6 +1,6 @@
 import ffi
 import src/chat/client
-import waku/waku_mix/logos_core_client as mix_rln_client
+import logos_delivery/waku/waku_mix/logos_core_client as mix_rln_client
 
 declareLibrary("logoschat")
 

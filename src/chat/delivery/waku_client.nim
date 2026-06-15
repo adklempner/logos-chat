@@ -5,8 +5,10 @@ import
   eth/common/addresses as eth_addresses,
   eth/common/keys as eth_keys,
   eth/p2p/discoveryv5/enr as eth_enr,
+  bearssl/rand,
   libp2p/crypto/crypto,
   libp2p/crypto/curve25519,
+  libp2p/crypto/rng as libp2p_rng,
   libp2p/peerid,
   libp2p_mix,
   libp2p_mix/curve25519 as mix_curve25519,
@@ -18,6 +20,7 @@ import
   strformat,
   logos_delivery/waku/[
     common/logging,
+    common/option_shims,
     common/enr as common_enr,
     node/peer_manager,
     waku_core,
@@ -119,7 +122,13 @@ type
 
 
 proc DefaultConfig*(): WakuConfig =
-  let nodeKey = crypto.PrivateKey.random(Secp256k1, crypto.newRng()[])[]
+  # libp2p 1.15.3+: PrivateKey.random expects a libp2p Rng (ref object
+  # wrapping a HmacDrbgContext); wrap BearSSL's rng accordingly.
+  let drbg = HmacDrbgContext.new()
+  let nodeKey = crypto.PrivateKey.random(
+    Secp256k1, libp2p_rng.newBearSslRng(drbg)
+  ).valueOr:
+    raise newException(ValueError, "failed to generate nodeKey: " & $error)
   let clusterId = 2'u16
   let shardId = 1'u16
   var port: uint16 = 50000'u16 + uint16(rand(200))
