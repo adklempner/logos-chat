@@ -376,7 +376,12 @@ WALLET_HOME_SUBDIR=$([ "$SIM_NETWORK" = testnet ] && echo testnet || echo dev)
 export NSSA_WALLET_HOME_DIR="$LEZ_RLN_DIR/$WALLET_HOME_SUBDIR"
 export WALLET_CONFIG="$NSSA_WALLET_HOME_DIR/wallet_config.json"
 export WALLET_STORAGE="$NSSA_WALLET_HOME_DIR/storage.json"
-TREE_ID_HEX="000102030405060708090a0b0c0d0e0f1011121314151617a0cba6e85ca1e26e"
+# Deployment-specific tree id. Sourced from the on-chain registrar this sim
+# targets; bump together with the registrar's deploy. NOT hardcoded in Rust
+# source — lez-rln binaries read LEZ_RLN_TREE_ID_HEX from the env, so we
+# export it for run_setup. Override at invocation by setting the env var.
+TREE_ID_HEX="${LEZ_RLN_TREE_ID_HEX:-000102030405060708090a0b0c0d0e0f1011121314151617a0cba6e85ca1e26e}"
+export LEZ_RLN_TREE_ID_HEX="$TREE_ID_HEX"
 GIFTER_ACCOUNT_FILE="$HOME/.logos-lez-rln/payment_account_${TREE_ID_HEX}.txt"
 
 # Local: clean wallet each run so run_setup re-deploys.
