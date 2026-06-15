@@ -1452,7 +1452,10 @@ if [ "${SIM_DEMO_MODE:-0}" = "1" ]; then
     PROOF_GEN=$(count_across_nodes "Generated RLN proof successfully")
     check "[ $PROOF_GEN -ge 1 ]" "(3a) Mix nodes generated RLN proofs ($PROOF_GEN total)"
 
-    PROOF_VERIFIED=$(count_across_nodes "Spam protection proof verified successfully")
+    # PR #9 (mix-rln plugin stateless) renamed the verification log line. Match
+    # either the legacy "Spam protection proof verified successfully" or the new
+    # "Proof verified successfully" emitted at INFO from the plugin.
+    PROOF_VERIFIED=$(count_across_nodes "Proof verified successfully")
     check "[ $PROOF_VERIFIED -ge 1 ]" "(3b) Proof verified by another mix node ($PROOF_VERIFIED total)"
 
     echo ""; echo "  =========================================="
