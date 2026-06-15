@@ -16,7 +16,7 @@ Companion docs:
 | # | Target | Status in our stack |
 |---|---|---|
 | 1 | `nim-libp2p v2.0.0` `c43199378f46` (tagged, merged) | Inherited |
-| 2 | `nim-libp2p-mix` master `e314cdd5` | **DIVERGENT — we pin PR #14 (`50c4ab4fa788`)** |
+| 2 | `nim-libp2p-mix` master `e314cdd5` | Direct base (master tip = squash merge of PR #14 + nix polish) |
 | 3 | `logos-delivery` master `6837ae0c` | Inherited (past — our base is downstream) |
 | 4 | `logos-delivery` PR #3931 (DoS plugin wiring + extracted mix) | Inherited via PR #3807 |
 | 5 | `logos-delivery` PR #3807 (cover traffic) | Direct base |
@@ -53,34 +53,53 @@ consequences — see Transitional Work below.
 
 ---
 
-## 2. nim-libp2p-mix master `e314cdd5` — DIVERGENT
+## 2. nim-libp2p-mix master `e314cdd5`
 
-**Status:** we are NOT on master. We are on PR #14 (`50c4ab4fa788`),
-which is a parallel branch.
+**Status:** direct base. Master = the squash merge of PR #14's full
+7-commit stack (landed as `fc22035 chore: bump libp2p v2.0.0 (#12)`)
+plus one follow-up nix/deps.nix refresh.
 
-- The mix-rln plugin's nimble file pins to PR #14 explicitly:
+- The mix-rln plugin's nimble file pins master directly:
   ```nim
-  # libp2p_mix — extracted into its own repo; previously libp2p/protocols/mix.
-  # Tip of experiment/drop-nimble-lock (currently PR #14, stacked on top of
-  # chore/bump-libp2p-v2.0.0). Pinned to the PR HEAD until the stack lands on
-  # master; waku.nimble pins the same SHA to keep the diamond dep collapsed
-  # to one libp2p_mix source.
-  requires "https://github.com/logos-co/nim-libp2p-mix.git#50c4ab4fa788a33eb12a0a2cecaa708873352b58"
+  # Master tip. PR #12 squash-merged the PR #14 stack (v2.0.0 bump +
+  # sink overrides + AddressConfidence.Infinite + deeper move-semantics
+  # propagation + lockfile-as-build-artefact cleanup) and one
+  # nix/deps.nix refresh sits on top.
+  requires "https://github.com/logos-co/nim-libp2p-mix.git#e314cdd50e0a837594400e40ba8291f198113464"
   ```
-- Verified the two SHAs are on parallel branches (neither is an
-  ancestor of the other) by `git merge-base --is-ancestor` checks
-  against the upstream repo.
-- Practical impact: PR #14 adds sink overrides, `AddressConfidence.Infinite`,
-  deeper move-semantics propagation, and the lockfile-as-build-artefact
-  cleanup. Master `e314cdd5` has none of these — it's only
-  "chore: bump nix/deps.nix after bumping libp2p to v2.0.0 (#21)".
+- Master contains everything PR #14 carried — there is no semantic
+  divergence at the consumer layer.
 
-**Our work on top:** none. We inherit PR #14 via PR #9's nimble pin.
+**Our work on top:** none. We inherit via PR #9's nimble pin and our
+own bump of that pin.
 
-**Unwind path:** when PR #14 lands on master, both PR #9 (mix-rln
-plugin) and any downstream nimble consumer can switch the pin from
-`50c4ab4fa788` to whatever master tip carries the PR #14 stack — a
-trivial bump.
+### How we got here (historical)
+
+During the active rebase cycle, PR #14 hadn't landed and the mix-rln
+plugin nimble-pinned to its HEAD SHA `50c4ab4fa788`. After PR #12
+squash-merged the same stack into master as `fc22035` and the
+follow-up `e314cdd` (nix/deps.nix refresh) landed, we bumped the
+mix-rln plugin's pin from `50c4ab4fa788` → `e314cdd50e0a`.
+
+The git-ancestry check returns `false` in both directions because
+squash merges break parent linkage, but content-wise master is the
+strict superset of PR #14 + nix polish:
+
+- 14-file delta from PR #14 → master is dominated by CI workflow
+  improvements, README polish, nix/deps.nix updates, and a single
+  non-load-bearing internal-field rename (`destReadBehavior` →
+  `destReadBehaviors`).
+- The proc API (`registerDestReadBehavior`) is unchanged; only the
+  underlying private field name. The single consumer in our tree
+  (`vendor/nwaku/logos_delivery/waku/node/waku_node.nim:377`) calls
+  the proc, not the field — zero source-side ripple.
+- Master's nimble file changed the libp2p constraint from
+  `https://github.com/vacp2p/nim-libp2p.git#c43199378f46...` (SHA) to
+  `libp2p == 2.0.0` (semver). The SHA we already pin reports
+  `version = "2.0.0"` in its own nimble file, so the diamond-dep
+  resolver still collapses cleanly.
+
+Verified end-to-end: 4/4 demo markers PASS after the swap.
 
 ---
 
@@ -158,8 +177,9 @@ pmtree backend with a Nim-IMT stateless implementation, migrates to
 zerokit 2.0.2, and bumps libp2p / libp2p_mix to the v2.0.0 line. It is
 the foundation of the new stack on the plugin side.
 
-Our `feat/lez-rln-stateless` adds 4 commits on top:
+Our `feat/lez-rln-stateless` adds 5 commits on top:
 ```
+8f4db89 deps(libp2p_mix): bump pin from PR #14 to master tip (e314cdd5)
 ba32e9f fix(onchain-lez): defensive add of witness-implied root at proof-gen time
 b40a84a feat(rln): info-level proof markers + atomic root+proof refresh in pollLoop
 607db30 cleanup(06-try-catch): remove dead try/except around {.raises: [].} await in pollLoop
@@ -192,15 +212,16 @@ branch" — closing that gap was the bulk of the work.
 
 | Branch | Repo | Tip | What it adds |
 |---|---|---|---|
-| `feat/lez-rln-stateless` | mix-rln-spam-protection-plugin (adklempner) | `ba32e9f` | PR #9 + 4 LEZ commits — see entry 6 |
+| `feat/lez-rln-stateless` | mix-rln-spam-protection-plugin (adklempner) | `8f4db89` | PR #9 + 4 LEZ commits + libp2p_mix master-tip bump — see entry 6 |
 | `rebase/lez-rln-gifter-on-3807` | logos-delivery (adklempner) | `81dd0b3` | PR #3807 + 4 commits |
 | `feat/rln-stateless-v2.0.2` | logos-lez-rln (logos-co) | `cbac992` | rln 2.0.1→2.0.2 + stateless features |
 | `rebase/sim-rln-gifter-on-new-stack` | logos-chat (adklempner) | `49c05e9` | submodule bumps + chat-side adaptation + sim infra |
 
 ### `rebase/lez-rln-gifter-on-3807` (nwaku)
 
-4 commits on top of PR #3807 base `92f1950e`:
+5 commits on top of PR #3807 base `92f1950e`:
 ```
+c3e375c3 deps(nimble.lock): bump libp2p_mix -> master tip + plugin -> 8f4db89
 81dd0b37 fix(option_shims): import wherever valueOr is called on std/Option
 ce04f936 cleanup: DRY bytesToHexUpper + dead-code removal + narrowed exception handling
 f9313f37 feat(mix,rln-gifter): LEZ-backed RLN mix + 2-phase gifter protocol (rebased onto PR #3807; plugin via nimble)
@@ -384,17 +405,17 @@ get the prep for free.
 For grep-friendliness:
 
 ```
-logos-chat         rebase/sim-rln-gifter-on-new-stack    49c05e9
-logos-delivery     rebase/lez-rln-gifter-on-3807         81dd0b3
+logos-chat         rebase/sim-rln-gifter-on-new-stack    00d0507
+logos-delivery     rebase/lez-rln-gifter-on-3807         c3e375c3
 logos-lez-rln      feat/rln-stateless-v2.0.2             cbac992
-mix-rln-plugin     feat/lez-rln-stateless                ba32e9f
+mix-rln-plugin     feat/lez-rln-stateless                8f4db89
 ```
 
 Upstream pin SHAs we depend on (transitively or via nimble):
 
 ```
 nim-libp2p (vacp2p)              c43199378f46    [target, hit]
-nim-libp2p-mix (logos-co)        50c4ab4fa788    [via PR #14 — NOT master e314cdd5]
+nim-libp2p-mix (logos-co)        e314cdd50e0a    [master tip = PR #14 squash + nix polish]
 logos-delivery base (PR #3807)   92f1950e        [past upstream/master 6837ae0c]
 mix-rln plugin base (PR #9)      61ee3e5         [feat/stateless-rln]
 ```
