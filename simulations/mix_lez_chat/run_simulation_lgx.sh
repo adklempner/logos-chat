@@ -36,6 +36,12 @@ export LOGOS_EVENT_STDERR=1  # Mirror EVENT: lines to stderr so the sim can grep
 die() { echo "  FATAL: $*" >&2; exit 1; }
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
+# Source setup_from_scratch.sh for the prep helpers (patch_delivery_nimble_lock,
+# rename_libp2p_carcass, mirror_chat_nimbledeps). Each is idempotent so calling
+# them from the auto-build paths below is safe on already-set-up clones.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/setup_from_scratch.sh"
+
 # Poll a logoscore log until it shows >= $expected "Method call successful"
 # lines, or until $timeout iterations (sleeping $sleep_sec each) have elapsed.
 # Sets global $N to the last observed count so callers can branch on it.
@@ -562,6 +568,9 @@ if [ -z "${DELIVERY_EXTRA_LIB:-}" ]; then
                 || die "delivery submodule init failed"
         fi
         log "  Local liblogosdelivery.$EXT missing — building via make..."
+        # Patch nimble.lock for the nimble 0.22.3 URL bug before invoking nimble.
+        # Idempotent: skips if patches are already applied.
+        patch_delivery_nimble_lock
         (cd "$DELIVERY_DIR" && make -j4 liblogosdelivery 2>&1 | tail -3) \
             || die "make liblogosdelivery failed in $DELIVERY_DIR"
     fi
@@ -580,6 +589,9 @@ if [ -z "${CHAT_EXTRA_LIB:-}" ]; then
         # is produced by `make liblogoschat` from $LOGOS_CHAT_DIR. Skipping
         # this on a fresh clone falls through to a stale /nix/store hit.
         log "  Local liblogoschat.$EXT missing — building via make..."
+        # PR #3807 carcass + nimbledeps prep. Both idempotent.
+        rename_libp2p_carcass
+        mirror_chat_nimbledeps
         (cd "$LOGOS_CHAT_DIR" && make update && make liblogoschat 2>&1 | tail -3) \
             || die "make liblogoschat failed in $LOGOS_CHAT_DIR"
     fi

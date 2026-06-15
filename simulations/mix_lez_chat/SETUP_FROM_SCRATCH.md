@@ -6,6 +6,32 @@ PR #3807 DoS + cover traffic + LEZ-RLN gifter).
 
 Tested on macOS 15 (arm64).
 
+## TL;DR
+
+After cloning + initializing submodules, the entire bootstrap is
+automated by `setup_from_scratch.sh` (each step is idempotent —
+re-running is a no-op):
+
+```bash
+git clone -b rebase/sim-rln-gifter-on-new-stack \
+  git@github.com:adklempner/logos-chat.git
+cd logos-chat
+git submodule update --init --recursive
+
+bash simulations/mix_lez_chat/setup_from_scratch.sh
+bash simulations/mix_lez_chat/demo_step.sh
+```
+
+The bootstrap takes ~30 min on a fresh clone (most of it is the RISC0
+guest build the first time around) and seconds on subsequent invocations.
+
+`run_simulation_lgx.sh` also sources `setup_from_scratch.sh` and calls
+the per-build helpers from its auto-build paths, so `demo_step.sh` alone
+will also do the right thing if you skip the explicit bootstrap step.
+
+The rest of this doc is a manual-step reference for debugging when the
+automated path falls over.
+
 ## Prerequisites
 
 | Tool | Notes |
