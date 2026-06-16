@@ -367,12 +367,18 @@ Override defaults via environment:
 | `SIM_RECEIVER_MIN_WAIT` | `15 / 60` | Minimum seconds to wait for receiver to join mix |
 | `SIM_DELIVERY_TIMEOUT` | `120 / 300` | Max seconds to wait for receiver to see a chat event |
 | `SIM_NODE_STARTUP_SLEEP` | `10 / 30` | Spacing between mix node startups |
-| `WALLET_LGX` / `RLN_LGX` / `DELIVERY_LGX` / `CHAT_LGX` | unset | Skip the corresponding `nix bundle` and use a pre-built `.lgx` from `/nix/store`. Useful when crates.io 403s on a fresh build (see "If `nix bundle` returns 403" above) |
+| `WALLET_LGX` / `RLN_LGX` / `DELIVERY_LGX` / `CHAT_LGX` | unset | Highest-priority override: use this exact `.lgx` path and skip the auto-discovery + `nix bundle` chain entirely. Mostly redundant now since the sim auto-discovers matching prebuilts in `/nix/store` (see `SIM_REBUILD_LGX`); kept for surgical pinning during debugging. |
 | `DELIVERY_EXTRA_LIB` / `CHAT_EXTRA_LIB` | unset | Skip the `make liblogosdelivery` / `make liblogoschat` auto-build and use the supplied dylib path directly. Useful when iterating on the C++ plugin layer without touching Nim sources |
 | `DELIVERY_REPO` | `git@github.com:adklempner/logos-delivery.git` | Where to clone `vendor/logos-delivery` from when missing (it's `.gitignored` inside `logos-delivery-module`, so `git submodule update --init --recursive` doesn't populate it) |
 | `DELIVERY_BRANCH` | `rebase/lez-rln-gifter-on-3807` | Branch checked out from `DELIVERY_REPO` |
-| `LGX_CACHE_DIR` | `~/.cache/sim-lgx` | Where the sim parks indirect GC roots for each module's bundle output. First run builds + pins; subsequent runs resolve the symlink and skip `nix bundle` entirely (~10 min → ~5 s for the bundling phase). Pins survive `nix-collect-garbage`. |
-| `SIM_REBUILD_LGX` | unset | Set to `1` to invalidate the `LGX_CACHE_DIR` pins and force a fresh `nix bundle` per module. Use after editing module sources. |
+| `LGX_CACHE_DIR` | `~/.cache/sim-lgx` | Where the sim parks indirect GC roots for each module's bundle output. First run pins; subsequent runs resolve the symlink. Pins survive `nix-collect-garbage`. |
+| `SIM_REBUILD_LGX` | unset | Set to `1` to bypass BOTH the `LGX_CACHE_DIR` symlink AND the `/nix/store` auto-discovery and force a fresh `nix bundle` per module. Use after editing module sources. |
+
+**`.lgx` resolution order** (per module): explicit env var → `LGX_CACHE_DIR`
+GC-link → auto-discovered match in `/nix/store` → fresh `nix bundle`. The
+`/nix/store` auto-discovery makes fresh clones reliably picks up any
+previously-built `.lgx` (yours or a colleague's), sidestepping the
+`crates.io` `403` failure mode that breaks `nix bundle` from a cold cache.
 
 Example — fast iteration with verbose logging:
 

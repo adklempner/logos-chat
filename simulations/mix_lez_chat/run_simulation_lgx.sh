@@ -486,6 +486,8 @@ lgx_from() {
     local dir="$1" attr="$2"; shift 2
     local cache_key="${dir//\//_}__${attr}"
     local gc_link="$LGX_CACHE_DIR/$cache_key"
+
+    # Tier 1: per-sim GC-link cache from a previous run (fastest).
     if [ -z "${SIM_REBUILD_LGX:-}" ] && [ -L "$gc_link" ]; then
         local cached_path cached_lgx
         cached_path=$(readlink "$gc_link")
@@ -496,6 +498,42 @@ lgx_from() {
         fi
         rm -f "$gc_link"
     fi
+
+    # Tier 2: any pre-built .lgx already in /nix/store. Prefers cached output
+    # over rebuilding because `nix bundle` for these modules transitively
+    # fetches Rust crates from crates.io's static.crates.io endpoint, which
+    # 403s often enough that "rebuild on every fresh clone" is unreliable.
+    # SIM_REBUILD_LGX=1 forces a fresh bundle when source changes need to
+    # take effect.
+    if [ -z "${SIM_REBUILD_LGX:-}" ]; then
+        local pattern=""
+        case "$attr" in
+            wallet-module)    pattern="logos-execution-zone-module*.lgx" ;;
+            logos-rln-module) pattern="logos-rln-module*.lgx" ;;
+            lib)
+                # disambiguate by the source dir
+                if [[ "$dir" == *chat-module* ]]; then
+                    pattern="logos-chat_module-module-lib*.lgx"
+                else
+                    pattern="logos-delivery_module-module-lib*.lgx"
+                fi
+                ;;
+        esac
+        if [ -n "$pattern" ]; then
+            local store_lgx
+            store_lgx=$(find /nix/store -maxdepth 3 -name "$pattern" 2>/dev/null | head -1)
+            if [ -f "$store_lgx" ]; then
+                log "  lgx_from $attr: using prebuilt $(basename "$store_lgx") from /nix/store"
+                # Pin a GC root so the chosen .lgx survives nix-collect-garbage.
+                local store_dir; store_dir=$(dirname "$store_lgx")
+                nix-store --add-root "$gc_link" --indirect -r "$store_dir" >/dev/null 2>&1 || true
+                printf '%s' "$store_lgx"
+                return 0
+            fi
+        fi
+    fi
+
+    # Tier 3: no cache hit, build fresh via nix bundle.
     local out_link store_path lgx
     out_link=$(mktemp -d)/result
     (cd "$dir" && nix bundle --bundler github:logos-co/nix-bundle-lgx "$@" --out-link "$out_link" ".#$attr" >/dev/null 2>&1) \
@@ -507,10 +545,12 @@ lgx_from() {
     nix-store --add-root "$gc_link" --indirect -r "$store_path" >/dev/null 2>&1 || true
     printf '%s' "$lgx"
 }
-# Per-module overrides let dev shortcut to a previously-built .lgx in
-# /nix/store/<hash>/<name>.lgx, useful when an upstream cargo/git-source fetch
-# fails (e.g. crates.io 403s on librln-mix vendor) but the cached .lgx is
-# still good.
+# .lgx precedence:
+#   1. explicit env vars (WALLET_LGX / RLN_LGX / DELIVERY_LGX / CHAT_LGX) win
+#   2. LGX_CACHE_DIR GC link from a previous run of this sim
+#   3. lgx_from auto-discovers a matching .lgx already in /nix/store
+#   4. nix bundle rebuilds from source
+# SIM_REBUILD_LGX=1 forces tier 4 (use after editing module sources).
 #
 # wallet-module override chain:
 # - logos-execution-zone-module: upstream pin lacks the `send_public_transaction`
