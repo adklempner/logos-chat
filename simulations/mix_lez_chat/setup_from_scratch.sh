@@ -305,6 +305,30 @@ ensure_lez_rln_rust_binaries() {
         || die "cargo build (lez-rln debug binaries) failed"
 }
 
+# ---------- Step 3b — RISC0 zkVM guest binaries ----------
+#
+# run_setup loads two zkVM ELF binaries at startup:
+#   methods/guest/target/riscv32im-risc0-zkvm-elf/docker/rln_registration.bin
+#   methods/guest/target/.../incremental_merkle_tree.bin
+# These come from `cargo risczero build` (Docker-backed) and aren't
+# produced by the regular cargo build above.
+ensure_risc0_guest_binaries() {
+    local guest_dir="$LEZ_RLN_DIR/lez-rln/methods/guest/target/riscv32im-risc0-zkvm-elf/docker"
+    if [ -f "$guest_dir/rln_registration.bin" ] && \
+       [ -f "$guest_dir/incremental_merkle_tree.bin" ]; then
+        skip "RISC0 guest binaries already built"
+        return 0
+    fi
+    command -v cargo-risczero >/dev/null || \
+        die "cargo-risczero not on PATH — install via rzup (https://dev.risczero.com/api/zkvm/install)"
+    command -v docker >/dev/null || die "docker not on PATH — required by cargo risczero build"
+
+    log "Building RISC0 guest binaries via 'cargo risczero build' (Docker, ~10 min)..."
+    (cd "$LEZ_RLN_DIR/lez-rln" && \
+        cargo risczero build --manifest-path methods/guest/Cargo.toml 2>&1 | tail -3) \
+        || die "cargo risczero build failed"
+}
+
 # ---------- logos-chat-module sibling clone ----------
 #
 # The sim script defaults CHAT_MODULE_DIR to $LOGOS_CHAT_DIR/../logos-chat-module.
@@ -355,6 +379,7 @@ bootstrap_all() {
     ensure_chat_module_sibling
     ensure_lez_rln_nix_builds
     ensure_lez_rln_rust_binaries
+    ensure_risc0_guest_binaries
     ensure_liblogosdelivery
     ensure_liblogoschat
     ensure_delivery_module_plugin_optional
