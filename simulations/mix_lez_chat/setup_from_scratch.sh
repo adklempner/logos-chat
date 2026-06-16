@@ -230,7 +230,18 @@ ensure_liblogosdelivery() {
         return 0
     fi
 
-    [ -d "$DELIVERY_DIR/.git" ] || die "$DELIVERY_DIR not a git repo — submodules initialized?"
+    # vendor/logos-delivery is .gitignored inside logos-delivery-module —
+    # `git submodule update --init --recursive` doesn't populate it. Auto-clone
+    # on first use. Same pattern as run_simulation_lgx.sh's pre-build block.
+    if [ ! -d "$DELIVERY_DIR/.git" ]; then
+        local repo="${DELIVERY_REPO:-git@github.com:adklempner/logos-delivery.git}"
+        local branch="${DELIVERY_BRANCH:-rebase/lez-rln-gifter-on-3807}"
+        log "Auto-cloning vendor/logos-delivery ($repo @ $branch)..."
+        git clone -b "$branch" "$repo" "$DELIVERY_DIR" 2>&1 | tail -3 \
+            || die "git clone $repo failed"
+        (cd "$DELIVERY_DIR" && git submodule update --init --recursive 2>&1 | tail -3) \
+            || die "delivery submodule init failed"
+    fi
 
     patch_delivery_nimble_lock
     log "Pre-staging nimble deps from lockfile..."
