@@ -305,6 +305,24 @@ ensure_lez_rln_rust_binaries() {
         || die "cargo build (lez-rln debug binaries) failed"
 }
 
+# ---------- logos-chat-module sibling clone ----------
+#
+# The sim script defaults CHAT_MODULE_DIR to $LOGOS_CHAT_DIR/../logos-chat-module.
+# That repo isn't part of logos-chat's submodules — it lives as a SIBLING
+# checkout. Auto-clone it on first use; the sim picks it up via the default.
+ensure_chat_module_sibling() {
+    local dst="$LOGOS_CHAT_DIR/../logos-chat-module"
+    if [ -d "$dst/.git" ]; then
+        skip "logos-chat-module sibling already cloned"
+        return 0
+    fi
+    local repo="${CHAT_MODULE_REPO:-https://github.com/logos-co/logos-chat-module.git}"
+    local branch="${CHAT_MODULE_BRANCH:-feat/logos-delivery-v2}"
+    log "Auto-cloning logos-chat-module sibling ($repo @ $branch)..."
+    git clone -b "$branch" "$repo" "$dst" 2>&1 | tail -3 \
+        || die "git clone $repo failed"
+}
+
 # ---------- Step 6 — delivery_module C++ plugin (OPTIONAL) ----------
 #
 # The default sim picks delivery_module_plugin.dylib from the DELIVERY_LGX
@@ -330,6 +348,7 @@ bootstrap_all() {
     log "  LEZ_RLN_DIR=$LEZ_RLN_DIR"
     log "  DELIVERY_DIR=$DELIVERY_DIR"
 
+    ensure_chat_module_sibling
     ensure_lez_rln_nix_builds
     ensure_lez_rln_rust_binaries
     ensure_liblogosdelivery
