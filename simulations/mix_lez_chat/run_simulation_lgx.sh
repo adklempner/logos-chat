@@ -523,7 +523,8 @@ lgx_from() {
             local store_lgx
             store_lgx=$(find /nix/store -maxdepth 3 -name "$pattern" 2>/dev/null | head -1)
             if [ -f "$store_lgx" ]; then
-                log "  lgx_from $attr: using prebuilt $(basename "$store_lgx") from /nix/store"
+                # stderr — stdout is the function's return channel for the path.
+                log "  lgx_from $attr: using prebuilt $(basename "$store_lgx") from /nix/store" >&2
                 # Pin a GC root so the chosen .lgx survives nix-collect-garbage.
                 local store_dir; store_dir=$(dirname "$store_lgx")
                 nix-store --add-root "$gc_link" --indirect -r "$store_dir" >/dev/null 2>&1 || true
