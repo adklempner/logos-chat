@@ -77,28 +77,147 @@ rename_libp2p_carcass() {
 #
 # chat's nim build needs nwaku's nimble deps reachable on the import path.
 # Mirror the working pkgs2/ that `make liblogosdelivery` populated in the
-# delivery clone, then strip the obsolete-pin variants of libp2p / websock
-# so chat compile picks the new ones.
+# delivery clone, then strip any pkg dirs whose pin doesn't appear in
+# nwaku's nimble.lock — those would shadow the correct version on the
+# search path and break compile.
 mirror_chat_nimbledeps() {
     local src="$DELIVERY_DIR/nimbledeps"
     local dst="$LOGOS_CHAT_DIR/vendor/nwaku/nimbledeps"
 
-    if [ -d "$dst/pkgs2" ] && [ "$(ls "$dst/pkgs2" 2>/dev/null | wc -l)" -gt 30 ]; then
-        skip "chat-side vendor/nwaku/nimbledeps already populated"
-        return 0
-    fi
-
     [ -d "$src/pkgs2" ] || die "delivery-side nimbledeps not built yet — run \`make liblogosdelivery\` first"
 
-    log "Mirroring nimbledeps from delivery clone -> vendor/nwaku..."
-    cp -R "$src" "$LOGOS_CHAT_DIR/vendor/nwaku/"
+    if [ ! -d "$dst/pkgs2" ]; then
+        log "Mirroring nimbledeps from delivery clone -> vendor/nwaku..."
+        cp -R "$src" "$LOGOS_CHAT_DIR/vendor/nwaku/"
+    else
+        log "Syncing nimbledeps from delivery clone -> vendor/nwaku..."
+        # Sync new pkgs from delivery side; the strip pass below removes
+        # any stale variants the chat side accumulated.
+        rsync -a --delete --no-times "$src/pkgs2/" "$dst/pkgs2/"
+    fi
 
-    # Strip the obsolete libp2p (pre-v2.0.0) — chat compile must pick the new one.
-    rm -rf "$dst/pkgs2/libp2p-#ff8d51857b4b79a68468e7bcc27b2026cca02996-fa2a7552c6ec860717b77ce34cf0b7afe4570234"
+    # Strip pkg dirs whose pin doesn't match nwaku's lockfile — these
+    # would shadow the correct version on nim's search path. Idempotent
+    # against re-runs and PR-3807-transitional pin set changes.
+    log "Stripping pin-mismatched nimbledeps variants from chat-side..."
+    python3 - "$LOGOS_CHAT_DIR/vendor/nwaku/nimble.lock" "$dst/pkgs2" <<'PYEND'
+import json, os, sys, shutil
+lock_path, pkgs2 = sys.argv[1], sys.argv[2]
+with open(lock_path) as f:
+    lock = json.load(f)
+# Build the set of accepted (name, version) tuples from nimble.lock.
+accepted = {}
+for name, entry in lock["packages"].items():
+    accepted[name] = entry["version"]
+removed = 0
+for dirname in os.listdir(pkgs2):
+    path = os.path.join(pkgs2, dirname)
+    if not os.path.isdir(path):
+        continue
+    # pkgs2 dirnames are <name>-<version>-<sha1>
+    parts = dirname.rsplit("-", 2)
+    if len(parts) < 3:
+        continue
+    pkg_name, pkg_ver, _ = parts
+    if pkg_name in accepted and accepted[pkg_name] != pkg_ver:
+        shutil.rmtree(path)
+        removed += 1
+        print(f"  stripped {dirname}", flush=True)
+if removed:
+    print(f"  removed {removed} stale pkg dir(s)", flush=True)
+PYEND
+}
 
-    # Strip the obsolete websock (chat compile fails with readHttpRequest undeclared
-    # if the new libp2p resolves against websock 0.3.0).
-    rm -rf "$dst/pkgs2/websock-0.3.0-1294a66520fa4541e261dec8a6a84f774fb8c0ac"
+# ---------- Pre-stage every nimble.lock entry ----------
+#
+# Two problems this works around in one helper:
+# 1. nimble 0.22.3 URL-handling bug — mangles `#`-prefix package versions
+#    into a tempdir path that's never created, so `nimble setup` fails on
+#    any git-pinned entry.
+# 2. macOS filename-length limit (255 bytes) on nim's nimcache. When nim
+#    compiles a package from the deep tempdir nimble downloads to, its
+#    mangled nimcache filenames embed the full source path and silently
+#    exceed 255 bytes (rooted at the long DELIVERY_DIR path), and the .c
+#    file open() fails. Pre-staging every package into pkgs2/ shortens
+#    those paths enough to stay under the limit.
+#
+# Pre-cloning each entry into pkgs2/<name>-<version>-<sha1>/ with a
+# hand-written nimblemeta.json lets nimble find them by directory match
+# and skip both the broken URL fetch and the tempdir build entirely.
+#
+# Idempotent: per-package check before clone.
+prestage_all_nimble_deps() {
+    local lock="$1"
+    local nimbledeps="$2"
+    local pkgs2="$nimbledeps/pkgs2"
+    mkdir -p "$pkgs2"
+
+    python3 - "$lock" "$pkgs2" <<'PYEND'
+import json, os, subprocess, sys
+lock_path, pkgs2 = sys.argv[1], sys.argv[2]
+with open(lock_path) as f:
+    lock = json.load(f)
+for name, entry in lock["packages"].items():
+    if name == "nim":
+        # nim itself is provisioned by install_nim.sh; skip.
+        continue
+    ver = entry.get("version", "")
+    rev = entry.get("vcsRevision", "")
+    if not rev:
+        # No git revision recorded — nothing to clone.
+        continue
+    url = entry["url"]
+    sha1 = entry["checksums"]["sha1"]
+    dest = os.path.join(pkgs2, f"{name}-{ver}-{sha1}")
+    if os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "nimblemeta.json")):
+        continue
+    if os.path.isdir(dest):
+        # incomplete from a prior aborted run — start over
+        subprocess.check_call(["rm", "-rf", dest])
+    print(f"  cloning {name}@{rev[:8]}...", flush=True)
+    subprocess.check_call(["git", "clone", "--quiet", url, dest])
+    subprocess.check_call(["git", "-C", dest, "checkout", "--quiet", rev])
+    # Some packages (secp256k1, miniupnpc-via-nat_traversal, bearssl)
+    # vendor their C sources as submodules. Init recursively so build
+    # can find them at compile time.
+    subprocess.check_call(["git", "-C", dest, "submodule", "update",
+                           "--init", "--recursive", "--quiet"])
+    # srcDir flatten — packages declare srcDir = "<sub>" in their .nimble
+    # (e.g. "src", "sds"), and consumers import as if those files were at
+    # the package root. Read the declared value and flatten accordingly.
+    # Match permissively: both srcDir="X" and srcDir = "X" appear in the
+    # wild, sometimes with multiple spaces around the =.
+    import re
+    nimble_files = [f for f in os.listdir(dest) if f.endswith(".nimble")]
+    if nimble_files:
+        with open(os.path.join(dest, nimble_files[0])) as f:
+            # Only match srcDir at start of a line — avoid matching
+            # `srcDir = "./"` inside proc parameter defaults (e.g. dnsdisc).
+            m = re.search(r'^\s*srcDir\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
+        if m and m.group(1) not in (".", ""):
+            src_dir = os.path.join(dest, m.group(1))
+            if os.path.isdir(src_dir):
+                subprocess.check_call(["bash", "-c",
+                    f'cp -R "{src_dir}/." "{dest}/" && rm -rf "{src_dir}"'])
+    # nimblemeta.json
+    files = []
+    for root, dirs, fns in os.walk(dest):
+        if ".git" in root.split(os.sep):
+            continue
+        for fn in fns:
+            rel = os.path.relpath(os.path.join(root, fn), dest)
+            files.append("/" + rel)
+    files.sort()
+    meta = {
+        "version": 1,
+        "metaData": {
+            "url": url, "downloadMethod": "git", "vcsRevision": rev,
+            "files": files, "binaries": [], "specialVersions": [ver],
+        }
+    }
+    with open(os.path.join(dest, "nimblemeta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+PYEND
 }
 
 # ---------- Step 4 — build delivery dylib (with patches applied first) ----------
@@ -114,6 +233,8 @@ ensure_liblogosdelivery() {
     [ -d "$DELIVERY_DIR/.git" ] || die "$DELIVERY_DIR not a git repo — submodules initialized?"
 
     patch_delivery_nimble_lock
+    log "Pre-staging nimble deps from lockfile..."
+    prestage_all_nimble_deps "$DELIVERY_DIR/nimble.lock" "$DELIVERY_DIR/nimbledeps"
     log "Building liblogosdelivery.$ext (this takes ~10 min on first build)..."
     (cd "$DELIVERY_DIR" && make -j4 liblogosdelivery 2>&1 | tail -3) \
         || die "make liblogosdelivery failed"
