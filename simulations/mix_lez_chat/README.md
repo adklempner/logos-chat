@@ -470,16 +470,18 @@ bash simulations/mix_lez_chat/run_simulation.sh --fresh
 
 ### Build-stage issues unique to the PR #3807 transition
 
-These usually surface during a fresh-clone bootstrap; the per-build prep
-helpers in `setup_from_scratch.sh` handle them automatically, but if you
-hit them manually the fix is:
+`setup_from_scratch.sh` handles all of these automatically on a fresh
+clone — the table is here as a reference for what each helper is doing
+and what to check if a helper ever stops doing its job:
 
-| Symptom | Cause | Fix |
+| Symptom | Helper that prevents it | What the helper does |
 |---|---|---|
-| `make liblogosdelivery`: `nimble setup` fails on `bearssl_pkey_decoder` with `git -C ... init failed` | nimble 0.22.3 URL-mangling bug on `#`-prefix version pins | Re-run `bash simulations/mix_lez_chat/setup_from_scratch.sh` — `patch_delivery_nimble_lock` handles it. Manual fallback: clone the failing dep into `nimbledeps/pkgs2/<name>-#<rev>-<sha>/` (sha fields are in `nimble.lock`) |
-| `make liblogoschat`: `Error: cannot open file: brokers/broker_context` | chat's nim path doesn't see nwaku's nimble deps | `mirror_chat_nimbledeps` handles it |
-| `make liblogoschat`: `EVP_PKEY undeclared` in libp2p's `certificate_ffi.nim` | OLD libp2p carcass picked up before the nimble-resolved v2.0.0 | `rename_libp2p_carcass` handles it |
-| `make liblogoschat`: `duplicate symbol _rust_eh_personality` at link | `librln_mix_v2.0.2.a` and the rust-bundle each embed their own Rust std | `scripts/fix_mix_librln_dupes.sh` should handle this; if it doesn't, verify `xcrun nm` is the macOS one (not a Homebrew GNU `nm` that can't parse rcgu objects) |
+| `nimble setup` fails on `bearssl_pkey_decoder` (or any `#`-prefix entry) with `git -C ... init failed` | `prestage_all_nimble_deps` | Pre-clones every `nimble.lock` entry with a `vcsRevision` into `nimbledeps/pkgs2/<name>-<version>-<sha1>/` with a hand-written `nimblemeta.json`, so nimble matches by dir and never hits the URL-mangling bug. |
+| `Error: cannot open '/Users/.../@m..@s..@s..@s..@s..@s..digitsutils.nim.c'` while building `dnsclient` / `secp256k1` | `prestage_all_nimble_deps` | Same helper — pre-staging into the lockfile-pinned slot bypasses nimble's deep tempdir build, where mangled nimcache filenames exceed macOS's 255-byte limit. |
+| `make liblogosdelivery`: nimble bails on a checksum mismatch for `nim` or `bearssl_pkey_decoder` | `patch_delivery_nimble_lock` | Two local-only `nimble.lock` patches (`nim` sha1 + `bearssl_pkey_decoder` revert) — neither commits upstream. |
+| `make liblogoschat`: `Error: cannot open file: brokers/broker_context` | `mirror_chat_nimbledeps` | Mirrors `nimbledeps/pkgs2/` from the delivery clone (where step 4 populated it) into chat's `vendor/nwaku/`, then strips any pkg whose version doesn't match nwaku's `nimble.lock`. |
+| `make liblogoschat`: `EVP_PKEY undeclared` in libp2p's `certificate_ffi.nim` | `rename_libp2p_carcass` | Moves `vendor/nwaku/vendor/nim-libp2p` aside — PR #3807 dropped the submodule but it lingers in pre-PR-3807 clones and shadows the nimble-resolved v2.0.0. |
+| `make liblogoschat`: `duplicate symbol _rust_eh_personality` at link | `scripts/fix_mix_librln_dupes.sh` | Localizes runtime symbols `librln_mix` shares with the rust-bundle's libchat. If this stops working, verify `xcrun nm` is the macOS one (Homebrew GNU `nm` can't parse rcgu objects from newer rustc). |
 
 ### Docker
 Docker logs are rescued to `./docker-sim-logs/` on failure.

@@ -154,9 +154,22 @@ wallet storage under `dev/` (local) or `testnet/` (persistent).
 Before invoking `make liblogosdelivery` and `make liblogoschat`, the script
 calls helpers defined in `setup_from_scratch.sh`:
 - `patch_delivery_nimble_lock` — patches `vendor/logos-delivery/nimble.lock`
-  in place to work around a nimble 0.22.3 URL-mangling bug on two `#`-prefix
-  package versions PR #3807's lockfile ships with. Idempotent; greps for the
-  original sha1s before patching. Local-only edit; never committed upstream.
+  in place to work around two checksum mismatches PR #3807's lockfile ships
+  (`nim` package sha1 + `bearssl_pkey_decoder` SHA revert). Idempotent;
+  greps for the original sha1s before patching. Local-only edit; never
+  committed upstream.
+- `prestage_all_nimble_deps` — pre-clones every entry in `nimble.lock`
+  that has a `vcsRevision` (everything except `nim` itself) into
+  `nimbledeps/pkgs2/<name>-<version>-<sha1>/` with a hand-written
+  `nimblemeta.json`. Closes two distinct issues in one helper:
+  (a) the nimble 0.22.3 URL-handling bug on `#`-prefix versions
+  (`git -C 'tempdir-that-was-never-created' init` failures), and
+  (b) the macOS 255-byte filename limit on nim's mangled nimcache paths
+  when nim compiles packages from nimble's deep tempdir — `dnsclient`
+  and `secp256k1` both trip this without pre-staging. Recursive
+  submodule init handles `secp256k1`-style vendored C libs;
+  permissive srcDir flatten handles `sds`'s `srcDir = "sds"` and
+  similar non-`src` layouts.
 - `rename_libp2p_carcass` — moves the stale
   `vendor/nwaku/vendor/nim-libp2p` checkout aside. PR #3807 dropped the
   submodule but the directory lingers in pre-PR-3807 working clones; the
@@ -165,9 +178,11 @@ calls helpers defined in `setup_from_scratch.sh`:
   `EVP_PKEY undeclared`.
 - `mirror_chat_nimbledeps` — mirrors `nimbledeps/pkgs2/` from the
   delivery-side build (where `make liblogosdelivery` populated it) into
-  `vendor/nwaku/` and strips the obsolete-pin libp2p/websock variants.
-  Required so the chat's nim build can resolve nwaku's nimble deps via
-  the search path.
+  `vendor/nwaku/`, then strips any pkg dir whose version doesn't match
+  nwaku's `nimble.lock`. Handles the transitional case where the chat
+  side has stale pins from a prior build (e.g. a libp2p_mix dirname that
+  no longer matches after a pin bump). Required so the chat's nim build
+  can resolve nwaku's nimble deps via the search path.
 
 **`librln_mix` (PR #9 stateless rebuild)**
 - The chat Makefile no longer builds its own `librln_mix_v2.0.0.a` via
