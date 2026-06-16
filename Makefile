@@ -87,7 +87,7 @@ RUST_BUNDLE_LIB := $(CARGO_TARGET_DIR)/release/liblogoschat_rust_bundle.a
 # can dedupe Rust-std + ffi_c_string_free symbols locally without mutating the
 # shared archive in vendor/.
 MIX_LIBRLN_VERSION ?= v2.0.2
-MIX_LIBRLN_SRC := $(CURDIR)/vendor/logos-lez-rln/logos-delivery/librln_$(MIX_LIBRLN_VERSION).a
+MIX_LIBRLN_SRC := $(CURDIR)/vendor/logos-lez-rln/logos-delivery-module/vendor/logos-delivery/librln_$(MIX_LIBRLN_VERSION).a
 MIX_LIBRLN_FILE ?= $(CURDIR)/build/librln_mix_$(MIX_LIBRLN_VERSION).a
 MIX_LIBRLN_NIM_PARAMS := --passL:$(MIX_LIBRLN_FILE) --passL:-lm
 ifneq ($(detected_OS),Darwin)
