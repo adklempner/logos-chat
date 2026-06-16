@@ -316,7 +316,11 @@ ensure_chat_module_sibling() {
         skip "logos-chat-module sibling already cloned"
         return 0
     fi
-    local repo="${CHAT_MODULE_REPO:-https://github.com/logos-co/logos-chat-module.git}"
+    # feat/logos-delivery-v2 lives on adklempner's fork (matches the
+    # current rebased delivery + chat stack); logos-co master predates
+    # PR #3807's logos_delivery/* layout and won't compile against our
+    # delivery dylib.
+    local repo="${CHAT_MODULE_REPO:-git@github.com:adklempner/logos-chat-module.git}"
     local branch="${CHAT_MODULE_BRANCH:-feat/logos-delivery-v2}"
     log "Auto-cloning logos-chat-module sibling ($repo @ $branch)..."
     git clone -b "$branch" "$repo" "$dst" 2>&1 | tail -3 \
