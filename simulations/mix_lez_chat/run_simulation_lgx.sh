@@ -123,6 +123,11 @@ start_logoscore_instance() {
     # modules without flat-namespace deps work fine.
     local -a daemon_env=(HOME="$HOME" PATH="$PATH" LOGOSCORE_CONFIG_DIR="$cfg_dir" RUST_BACKTRACE=full)
     [ -n "${DYLD_PRELOAD_LIBS:-}" ] && daemon_env+=(DYLD_INSERT_LIBRARIES="$DYLD_PRELOAD_LIBS")
+    # lez-rln-ffi (inside the rln-module plugin) reads LEZ_RLN_TREE_ID_HEX
+    # to derive program PDAs. Without it, merkle_proofs_plan derives a
+    # tree_main that doesn't match what run_setup created on-chain →
+    # register_member fails. env -i clears it; re-export explicitly.
+    [ -n "${LEZ_RLN_TREE_ID_HEX:-}" ] && daemon_env+=(LEZ_RLN_TREE_ID_HEX="$LEZ_RLN_TREE_ID_HEX")
     # Truncate first via `:>`, then daemon AND client both append via `>>`.
     # Critical: using bash `>` for the daemon leaves its fd in O_WRONLY (no
     # O_APPEND), so when the client interleaves appends via `>>` and then the
@@ -349,20 +354,32 @@ else
     # (auto-sync needs full git history; shallow Docker clones break it).
     if [ -x "$LEZ_RLN_DIR/lssa/target/debug/sequencer_service" ]; then
         log "  Using pre-built sequencer"
-        SEQ_BIN="./target/debug/sequencer_service"; SEQ_CFG="sequencer/service/configs/debug/sequencer_config.json"
+        SEQ_BIN="./target/debug/sequencer_service"
+        for cfg in lez/sequencer/service/configs/debug/sequencer_config.json sequencer/service/configs/debug/sequencer_config.json; do
+            [ -f "$LEZ_RLN_DIR/lssa/$cfg" ] && SEQ_CFG="$cfg" && break
+        done
     else
         # lssa rev must match what lez-rln's host-side client pins, else
-        # DeserializeUnexpectedEnd from wire-format divergence.
-        LSSA_REV=$(grep -oE '(rev|tag)\s*=\s*"[^"]+"' "$LEZ_RLN_DIR/lez-rln/Cargo.toml" | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-        [ -z "$LSSA_REV" ] && die "Could not extract lssa rev from lez-rln/Cargo.toml"
-        if ! git -C "$LEZ_RLN_DIR/lssa" merge-base --is-ancestor "$LSSA_REV" HEAD 2>/dev/null; then
-            log "  Pinning lssa to $LSSA_REV..."
-            (cd "$LEZ_RLN_DIR/lssa" && git fetch --quiet --tags origin && git checkout --quiet "$LSSA_REV") \
-                || die "lssa checkout $LSSA_REV failed"
+        # DeserializeUnexpectedEnd from wire-format divergence. When lez-rln
+        # uses path = "../lssa/..." deps the submodule IS the source of truth,
+        # so there's no separate rev to align against — skip the auto-pin.
+        LSSA_REV=$( (grep -oE '(rev|tag)\s*=\s*"[^"]+"' "$LEZ_RLN_DIR/lez-rln/Cargo.toml" || true) | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+        if [ -n "$LSSA_REV" ]; then
+            if ! git -C "$LEZ_RLN_DIR/lssa" merge-base --is-ancestor "$LSSA_REV" HEAD 2>/dev/null; then
+                log "  Pinning lssa to $LSSA_REV..."
+                (cd "$LEZ_RLN_DIR/lssa" && git fetch --quiet --tags origin && git checkout --quiet "$LSSA_REV") \
+                    || die "lssa checkout $LSSA_REV failed"
+            fi
+        else
+            log "  lez-rln uses path deps; trusting lssa submodule HEAD ($(git -C "$LEZ_RLN_DIR/lssa" rev-parse --short HEAD))"
         fi
         log "  Building sequencer..."
         if (cd "$LEZ_RLN_DIR/lssa" && cargo build --features standalone -p sequencer_service 2>&1 | tail -3); then
-            SEQ_BIN="./target/debug/sequencer_service"; SEQ_CFG="sequencer/service/configs/debug/sequencer_config.json"
+            SEQ_BIN="./target/debug/sequencer_service"
+            # rc6 moved the sequencer tree from sequencer/... to lez/sequencer/...
+            for cfg in lez/sequencer/service/configs/debug/sequencer_config.json sequencer/service/configs/debug/sequencer_config.json; do
+                [ -f "$LEZ_RLN_DIR/lssa/$cfg" ] && SEQ_CFG="$cfg" && break
+            done
         elif (cd "$LEZ_RLN_DIR/lssa" && cargo build --features standalone -p sequencer_runner 2>&1 | tail -3); then
             SEQ_BIN="./target/debug/sequencer_runner"; SEQ_CFG="sequencer_runner/configs/debug"
         else die "sequencer build failed"; fi
@@ -380,6 +397,9 @@ echo "[2/6] Deploying programs..."
 # wallet + on-chain state). wallet_config.json under each picks the sequencer.
 WALLET_HOME_SUBDIR=$([ "$SIM_NETWORK" = testnet ] && echo testnet || echo dev)
 export NSSA_WALLET_HOME_DIR="$LEZ_RLN_DIR/$WALLET_HOME_SUBDIR"
+# rc6 renamed nssa->lee, including the wallet-home env var. Set both so the
+# script works against both rc5- and rc6-era wallet builds.
+export LEE_WALLET_HOME_DIR="$NSSA_WALLET_HOME_DIR"
 export WALLET_CONFIG="$NSSA_WALLET_HOME_DIR/wallet_config.json"
 export WALLET_STORAGE="$NSSA_WALLET_HOME_DIR/storage.json"
 # Deployment-specific tree id. Sourced from the on-chain registrar this sim
@@ -508,7 +528,7 @@ lgx_from() {
     if [ -z "${SIM_REBUILD_LGX:-}" ]; then
         local pattern=""
         case "$attr" in
-            wallet-module)    pattern="logos-execution-zone-module*.lgx" ;;
+            wallet-module)    pattern="logos*execution*zone*-module*.lgx" ;;
             logos-rln-module) pattern="logos-rln-module*.lgx" ;;
             lib)
                 # disambiguate by the source dir

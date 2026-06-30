@@ -299,8 +299,19 @@ ensure_lez_rln_rust_binaries() {
     command -v cargo >/dev/null || die "cargo not on PATH — install Rust first"
 
     log "Building lez-rln debug binaries (run_setup, register_*, get_roots)..."
+    # rc6 lssa pulls in keycard_wallet -> pyo3, which links Python3 framework
+    # at build time. Default `python3` on macOS is Xcode's bundled Python at a
+    # non-rpath location; baked path then fails dyld lookup at runtime. Pin to
+    # Homebrew python3 when present so the linker bakes an absolute path that
+    # actually resolves.
+    PY_FOR_PYO3="${PYO3_PYTHON:-}"
+    if [ -z "$PY_FOR_PYO3" ]; then
+        for cand in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11; do
+            [ -x "$cand" ] && PY_FOR_PYO3="$cand" && break
+        done
+    fi
     (cd "$LEZ_RLN_DIR/lez-rln" && \
-        cargo build --bin run_setup --bin register_member \
+        env ${PY_FOR_PYO3:+PYO3_PYTHON="$PY_FOR_PYO3"} cargo build --bin run_setup --bin register_member \
                     --bin register_commitments --bin get_roots 2>&1 | tail -3) \
         || die "cargo build (lez-rln debug binaries) failed"
 }
