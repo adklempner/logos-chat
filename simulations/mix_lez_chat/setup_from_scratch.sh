@@ -230,10 +230,12 @@ ensure_liblogosdelivery() {
         return 0
     fi
 
-    # vendor/logos-delivery is .gitignored inside logos-delivery-module —
-    # `git submodule update --init --recursive` doesn't populate it. Auto-clone
-    # on first use. Same pattern as run_simulation_lgx.sh's pre-build block.
-    if [ ! -d "$DELIVERY_DIR/.git" ]; then
+    # vendor/logos-delivery may be either .gitignored inside logos-delivery-module
+    # (then absent — needs manual clone) OR a nested submodule initialized by
+    # `--recurse-submodules` (then present, with .git as a gitlink FILE, not a
+    # dir). `[ ! -e $DIR/.git ]` catches both file+dir; `[ -d ]` would false-fire
+    # on the gitlink case and try to re-clone into an occupied path.
+    if [ ! -e "$DELIVERY_DIR/.git" ]; then
         local repo="${DELIVERY_REPO:-git@github.com:adklempner/logos-delivery.git}"
         local branch="${DELIVERY_BRANCH:-rebase/lez-rln-gifter-on-3807}"
         log "Auto-cloning vendor/logos-delivery ($repo @ $branch)..."
