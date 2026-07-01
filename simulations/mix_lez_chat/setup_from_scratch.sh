@@ -287,6 +287,24 @@ ensure_lssa_sibling() {
         || die "git clone lssa failed"
 }
 
+# ---------- Step 1c — spel-framework sibling clone ----------
+#
+# The RISC0 guest (lez-rln/methods/guest/Cargo.toml) has a path dep on
+# `../../../spel/spel-framework`, expecting a `spel/` sibling of `lez-rln/`.
+# spel isn't tracked in the logos-lez-rln repo; clone it on the rc6 port
+# branch if missing. Same pattern as ensure_lssa_sibling.
+ensure_spel_sibling() {
+    local dst="$LEZ_RLN_DIR/spel"
+    if [ -d "$dst/.git" ]; then
+        skip "spel sibling already cloned"
+        return 0
+    fi
+    log "Cloning spel sibling at feat/v0.5.0-rc6-port..."
+    git clone --branch feat/v0.5.0-rc6-port \
+        https://github.com/adklempner/spel.git "$dst" 2>&1 | tail -3 \
+        || die "git clone spel failed"
+}
+
 # ---------- Step 2 — nix builds (logos-rln-module + wallet-module) ----------
 ensure_lez_rln_nix_builds() {
     if [ -e "$LEZ_RLN_DIR/logos-rln-module/result-rln" ] \
@@ -438,6 +456,7 @@ bootstrap_all() {
 
     ensure_chat_module_sibling
     ensure_lssa_sibling
+    ensure_spel_sibling
     ensure_lez_rln_nix_builds
     ensure_lez_rln_rust_binaries
     ensure_risc0_guest_binaries
