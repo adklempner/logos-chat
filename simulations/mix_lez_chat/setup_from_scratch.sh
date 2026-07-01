@@ -230,14 +230,24 @@ ensure_liblogosdelivery() {
         return 0
     fi
 
-    # vendor/logos-delivery may be either .gitignored inside logos-delivery-module
-    # (then absent — needs manual clone) OR a nested submodule initialized by
-    # `--recurse-submodules` (then present, with .git as a gitlink FILE, not a
-    # dir). `[ ! -e $DIR/.git ]` catches both file+dir; `[ -d ]` would false-fire
-    # on the gitlink case and try to re-clone into an occupied path.
-    if [ ! -e "$DELIVERY_DIR/.git" ]; then
+    # vendor/logos-delivery has three possible states on a fresh clone:
+    #   1. Absent — logos-delivery-module has it .gitignored on some branches
+    #   2. Populated by `--recurse-submodules` at the upstream master pin —
+    #      the pin predates nimble.lock (needed for our build), so we treat
+    #      this the same as absent and reclone into it
+    #   3. Populated at our fork's rebase branch — do nothing
+    # Marker for state 3: nimble.lock exists at the top. If it doesn't,
+    # deinit the submodule (if any), remove the working tree, and clone
+    # the fork branch fresh.
+    if [ ! -f "$DELIVERY_DIR/nimble.lock" ]; then
         local repo="${DELIVERY_REPO:-git@github.com:adklempner/logos-delivery.git}"
         local branch="${DELIVERY_BRANCH:-rebase/lez-rln-gifter-on-3807}"
+        if [ -e "$DELIVERY_DIR/.git" ]; then
+            log "vendor/logos-delivery at upstream pin (no nimble.lock) — deinit + reclone"
+            (cd "$LEZ_RLN_DIR/logos-delivery-module" && \
+                git submodule deinit -f vendor/logos-delivery 2>&1 | tail -1) || true
+            rm -rf "$DELIVERY_DIR"
+        fi
         log "Auto-cloning vendor/logos-delivery ($repo @ $branch)..."
         git clone -b "$branch" "$repo" "$DELIVERY_DIR" 2>&1 | tail -3 \
             || die "git clone $repo failed"
