@@ -1300,12 +1300,18 @@ log "  Sender method calls: $N/$SEND_EXPECTED"
 if [ -n "$INTRO_BUNDLE" ]; then
     echo "  Waiting for sender on-chain membership confirmation..."
     CONFIRM_T0=$SECONDS
-    # Local: ~3min typical. Testnet: 5-30min per registration due to block
-    # times + finality lag. Default scales with network.
+    # Local: ~3min typical. Testnet: chat-client senders never emit
+    # "membership confirmed on-chain" — watchMembershipConfirmation is
+    # only wired on the mix-node registration path (logos-delivery
+    # node_factory.nim:840). The wait is a nudge, not a gate; the loop
+    # falls through on timeout and setRlnConfig fires anyway. Keep it
+    # short so the sim doesn't waste an hour waiting for a log line
+    # that won't come. Override with SIM_SENDER_CONFIRM_TIMEOUT if a
+    # future chat-module change adds a confirmation-log path.
     if [ "$SIM_NETWORK" = testnet ]; then
-        CONFIRM_TIMEOUT=${SIM_SENDER_CONFIRM_TIMEOUT:-3600}
+        CONFIRM_TIMEOUT=${SIM_SENDER_CONFIRM_TIMEOUT:-120}
     else
-        CONFIRM_TIMEOUT=${SIM_SENDER_CONFIRM_TIMEOUT:-600}
+        CONFIRM_TIMEOUT=${SIM_SENDER_CONFIRM_TIMEOUT:-60}
     fi
     for t in $(seq 1 $CONFIRM_TIMEOUT); do
         if sed 's/\x1b\[[0-9;]*m//g' "$SENDER_LOG" 2>/dev/null | grep -q "membership confirmed on-chain"; then
