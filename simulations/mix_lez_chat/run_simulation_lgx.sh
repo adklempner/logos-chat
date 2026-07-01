@@ -402,6 +402,31 @@ export NSSA_WALLET_HOME_DIR="$LEZ_RLN_DIR/$WALLET_HOME_SUBDIR"
 export LEE_WALLET_HOME_DIR="$NSSA_WALLET_HOME_DIR"
 export WALLET_CONFIG="$NSSA_WALLET_HOME_DIR/wallet_config.json"
 export WALLET_STORAGE="$NSSA_WALLET_HOME_DIR/storage.json"
+
+# Testnet: auto-stage flat fixtures from the shared deployment descriptor if
+# missing, then source the staged env.sh so the descriptor's LEZ_RLN_TREE_ID_HEX
+# becomes the tree_id source of truth for this run. Descriptor is authoritative:
+# wallet in storage.json.seed is bound to that tree_id; using any other value
+# makes run_setup redeploy and desync the sim from shared on-chain state.
+if [ "$SIM_NETWORK" = testnet ]; then
+    if [ ! -f "$LEZ_RLN_DIR/testnet/storage.json.seed" ] \
+       && [ -x "$LEZ_RLN_DIR/tools/deployments/stage.sh" ] \
+       && [ -d "$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}" ]; then
+        log "  Auto-staging testnet fixtures from deployments/${DEPLOYMENT:-shared-5ade}"
+        bash "$LEZ_RLN_DIR/tools/deployments/stage.sh" \
+            "$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}" \
+            "$LEZ_RLN_DIR/testnet" || die "stage.sh failed"
+    fi
+    # Read tree_id from the descriptor directly — do NOT source testnet/env.sh
+    # here (it reassigns SCRIPT_DIR when sourced, clobbering the sim's own).
+    if [ -z "${LEZ_RLN_TREE_ID_HEX:-}" ]; then
+        _desc_json="$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}/deployment.json"
+        if [ -f "$_desc_json" ] && command -v jq >/dev/null; then
+            LEZ_RLN_TREE_ID_HEX="$(jq -r .tree_id "$_desc_json")"
+        fi
+    fi
+fi
+
 # Deployment-specific tree id. Sourced from the on-chain registrar this sim
 # targets; bump together with the registrar's deploy. NOT hardcoded in Rust
 # source — lez-rln binaries read LEZ_RLN_TREE_ID_HEX from the env, so we
@@ -506,6 +531,30 @@ lgx_from() {
     local dir="$1" attr="$2"; shift 2
     local cache_key="${dir//\//_}__${attr}"
     local gc_link="$LGX_CACHE_DIR/$cache_key"
+
+    # Tier 0: authoritative — flake exposes a content-addressed .lgx output
+    # (either `.#<attr>` already .lgx-shaped, or `.#<attr>-lgx` bundled).
+    # Whichever resolves is deterministic w.r.t. source, so we never risk a
+    # /nix/store lottery. Skip when SIM_REBUILD_LGX is set only if the caller
+    # also wants to bypass this — the flake output IS the fresh build.
+    local flake_attr=""
+    if (cd "$dir" && nix eval --raw ".#${attr}-lgx" >/dev/null 2>&1); then
+        flake_attr="${attr}-lgx"
+    elif (cd "$dir" && nix eval --raw ".#${attr}" 2>/dev/null | grep -q '\-lgx-'); then
+        flake_attr="${attr}"
+    fi
+    if [ -n "$flake_attr" ]; then
+        local store_path store_lgx
+        store_path=$(cd "$dir" && nix build --no-link --print-out-paths ".#$flake_attr" 2>/dev/null) \
+            || die "nix build .#$flake_attr failed in $dir"
+        store_lgx=$(find "$store_path" -maxdepth 1 -name '*.lgx' 2>/dev/null | head -1)
+        if [ -f "$store_lgx" ]; then
+            log "  lgx_from $attr: using flake output .#$flake_attr ($(basename "$store_lgx"))" >&2
+            nix-store --add-root "$gc_link" --indirect -r "$store_path" >/dev/null 2>&1 || true
+            printf '%s' "$store_lgx"
+            return 0
+        fi
+    fi
 
     # Tier 1: per-sim GC-link cache from a previous run (fastest).
     if [ -z "${SIM_REBUILD_LGX:-}" ] && [ -L "$gc_link" ]; then

@@ -268,6 +268,25 @@ ensure_liblogoschat() {
         || die "make liblogoschat failed"
 }
 
+# ---------- Step 1b — lssa sibling clone ----------
+#
+# The flake fetches lssa via fetchFromGitHub (portable, no submodule), but
+# host-side cargo (RISC0 guest, run_setup, derive_accounts, wallet-module's
+# --override-input for nix) still needs a plain sibling working directory at
+# vendor/logos-lez-rln/lssa. Clone at exactly the flake's pinned rev
+# (v0.2.0-rc6) if missing; skip otherwise.
+ensure_lssa_sibling() {
+    local dst="$LEZ_RLN_DIR/lssa"
+    if [ -d "$dst/.git" ]; then
+        skip "lssa sibling already cloned"
+        return 0
+    fi
+    log "Cloning lssa sibling at v0.2.0-rc6..."
+    git clone --branch v0.2.0-rc6 \
+        https://github.com/logos-blockchain/logos-execution-zone.git "$dst" 2>&1 | tail -3 \
+        || die "git clone lssa failed"
+}
+
 # ---------- Step 2 — nix builds (logos-rln-module + wallet-module) ----------
 ensure_lez_rln_nix_builds() {
     if [ -e "$LEZ_RLN_DIR/logos-rln-module/result-rln" ] \
@@ -292,7 +311,8 @@ ensure_lez_rln_nix_builds() {
 # ---------- Step 3 — Rust setup binaries (debug) ----------
 ensure_lez_rln_rust_binaries() {
     local target="$LEZ_RLN_DIR/lez-rln/target/debug"
-    if [ -x "$target/run_setup" ] && [ -x "$target/register_member" ]; then
+    if [ -x "$target/run_setup" ] && [ -x "$target/register_member" ] \
+       && [ -x "$target/derive_accounts" ]; then
         skip "lez-rln debug binaries already built"
         return 0
     fi
@@ -312,7 +332,7 @@ ensure_lez_rln_rust_binaries() {
     fi
     (cd "$LEZ_RLN_DIR/lez-rln" && \
         env ${PY_FOR_PYO3:+PYO3_PYTHON="$PY_FOR_PYO3"} cargo build --bin run_setup --bin register_member \
-                    --bin register_commitments --bin get_roots 2>&1 | tail -3) \
+                    --bin register_commitments --bin get_roots --bin derive_accounts 2>&1 | tail -3) \
         || die "cargo build (lez-rln debug binaries) failed"
 }
 
@@ -338,6 +358,35 @@ ensure_risc0_guest_binaries() {
     (cd "$LEZ_RLN_DIR/lez-rln" && \
         cargo risczero build --manifest-path methods/guest/Cargo.toml 2>&1 | tail -3) \
         || die "cargo risczero build failed"
+}
+
+# ---------- Step 3c — stage testnet fixtures from the shared deployment ----------
+#
+# The lez-rln tree ships a canonical shared testnet deployment as a descriptor
+# under deployments/shared-5ade/. Stage it into vendor/logos-lez-rln/testnet/
+# (flat fixture layout the sim consumes) so a fresh clone can run SIM_NETWORK=testnet
+# without hand-maintained fixture files. Idempotent — stage.sh no-ops nothing
+# but overwriting is safe: it re-derives from the descriptor deterministically.
+ensure_testnet_fixtures_staged() {
+    local desc="$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}"
+    local out="$LEZ_RLN_DIR/testnet"
+    local stage="$LEZ_RLN_DIR/tools/deployments/stage.sh"
+    if [ ! -x "$stage" ]; then
+        skip "tools/deployments/stage.sh not present — old lez-rln pin?"
+        return 0
+    fi
+    if [ ! -d "$desc" ]; then
+        skip "deployment descriptor $desc not present"
+        return 0
+    fi
+    if [ -f "$out/storage.json.seed" ] && [ -f "$out/wallet_config.json" ] \
+       && [ -f "$out/payment_account.txt" ] && [ -f "$out/supply_holding.txt" ]; then
+        skip "testnet fixtures already staged"
+        return 0
+    fi
+    command -v jq >/dev/null || die "jq not on PATH — required by stage.sh"
+    log "Staging testnet fixtures from $desc..."
+    bash "$stage" "$desc" "$out" || die "stage.sh failed"
 }
 
 # ---------- logos-chat-module sibling clone ----------
@@ -388,12 +437,14 @@ bootstrap_all() {
     log "  DELIVERY_DIR=$DELIVERY_DIR"
 
     ensure_chat_module_sibling
+    ensure_lssa_sibling
     ensure_lez_rln_nix_builds
     ensure_lez_rln_rust_binaries
     ensure_risc0_guest_binaries
     ensure_liblogosdelivery
     ensure_liblogoschat
     ensure_delivery_module_plugin_optional
+    ensure_testnet_fixtures_staged
 
     log "=== Bootstrap complete — run 'bash $SCRIPT_DIR/demo_step.sh' ==="
 }
