@@ -411,16 +411,16 @@ export WALLET_STORAGE="$NSSA_WALLET_HOME_DIR/storage.json"
 if [ "$SIM_NETWORK" = testnet ]; then
     if [ ! -f "$LEZ_RLN_DIR/testnet/storage.json.seed" ] \
        && [ -x "$LEZ_RLN_DIR/tools/deployments/stage.sh" ] \
-       && [ -d "$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}" ]; then
-        log "  Auto-staging testnet fixtures from deployments/${DEPLOYMENT:-shared-5ade}"
+       && [ -d "$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade-v2}" ]; then
+        log "  Auto-staging testnet fixtures from deployments/${DEPLOYMENT:-shared-5ade-v2}"
         bash "$LEZ_RLN_DIR/tools/deployments/stage.sh" \
-            "$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}" \
+            "$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade-v2}" \
             "$LEZ_RLN_DIR/testnet" || die "stage.sh failed"
     fi
     # Read tree_id from the descriptor directly — do NOT source testnet/env.sh
     # here (it reassigns SCRIPT_DIR when sourced, clobbering the sim's own).
     if [ -z "${LEZ_RLN_TREE_ID_HEX:-}" ]; then
-        _desc_json="$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}/deployment.json"
+        _desc_json="$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade-v2}/deployment.json"
         if [ -f "$_desc_json" ] && command -v jq >/dev/null; then
             LEZ_RLN_TREE_ID_HEX="$(jq -r .tree_id "$_desc_json")"
         fi

@@ -406,6 +406,30 @@ ensure_lez_rln_rust_binaries() {
         || die "cargo build (lez-rln debug binaries) failed"
 }
 
+# ---------- Step 3a2 — Rust setup binaries (release, for provision/verify) ----------
+#
+# tools/deployments/provision.sh + verify.sh read run_setup + derive_accounts
+# from target/release, not target/debug. Build a release variant so
+# `provision.sh --name X` works out of the box without a manual cargo build.
+ensure_lez_rln_release_binaries() {
+    local target="$LEZ_RLN_DIR/lez-rln/target/release"
+    if [ -x "$target/run_setup" ] && [ -x "$target/derive_accounts" ]; then
+        skip "lez-rln release binaries already built"
+        return 0
+    fi
+    PY_FOR_PYO3="${PYO3_PYTHON:-}"
+    if [ -z "$PY_FOR_PYO3" ]; then
+        for cand in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11; do
+            [ -x "$cand" ] && PY_FOR_PYO3="$cand" && break
+        done
+    fi
+    log "Building lez-rln release binaries (run_setup, derive_accounts)..."
+    (cd "$LEZ_RLN_DIR/lez-rln" && \
+        env ${PY_FOR_PYO3:+PYO3_PYTHON="$PY_FOR_PYO3"} cargo build --release \
+                    --bin run_setup --bin derive_accounts 2>&1 | tail -3) \
+        || die "cargo build --release (lez-rln release binaries) failed"
+}
+
 # ---------- Step 3b — RISC0 zkVM guest binaries ----------
 #
 # run_setup / register_member / derive_accounts load two zkVM ELF binaries
@@ -457,7 +481,7 @@ ensure_risc0_guest_binaries() {
 # without hand-maintained fixture files. Idempotent — stage.sh no-ops nothing
 # but overwriting is safe: it re-derives from the descriptor deterministically.
 ensure_testnet_fixtures_staged() {
-    local desc="$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade}"
+    local desc="$LEZ_RLN_DIR/deployments/${DEPLOYMENT:-shared-5ade-v2}"
     local out="$LEZ_RLN_DIR/testnet"
     local stage="$LEZ_RLN_DIR/tools/deployments/stage.sh"
     if [ ! -x "$stage" ]; then
@@ -531,6 +555,7 @@ bootstrap_all() {
     ensure_spel_sibling
     ensure_lez_rln_nix_builds
     ensure_lez_rln_rust_binaries
+    ensure_lez_rln_release_binaries
     ensure_risc0_guest_binaries
     ensure_liblogosdelivery
     ensure_librln_bridge
