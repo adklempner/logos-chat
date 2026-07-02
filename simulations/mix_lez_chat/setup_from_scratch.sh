@@ -408,26 +408,45 @@ ensure_lez_rln_rust_binaries() {
 
 # ---------- Step 3b — RISC0 zkVM guest binaries ----------
 #
-# run_setup loads two zkVM ELF binaries at startup:
+# run_setup / register_member / derive_accounts load two zkVM ELF binaries
+# at startup, at the relative paths hardcoded in lez-rln/src/rln/client.rs:
 #   methods/guest/target/riscv32im-risc0-zkvm-elf/docker/rln_registration.bin
 #   methods/guest/target/.../incremental_merkle_tree.bin
-# These come from `cargo risczero build` (Docker-backed) and aren't
-# produced by the regular cargo build above.
+#
+# These are built by the `methods` crate's build.rs — it invokes
+# risc0_build::embed_methods_with_options which uses the LOCAL host risc0
+# toolchain (not Docker) to build the guest ELFs. Docker mode via
+# `cargo risczero build` is broken here because its build context is only
+# lez-rln/, which excludes the sibling lssa/ and spel/ that the guest
+# workspace has path deps on. Host mode resolves those paths natively.
+#
+# build.rs writes the .bin files to
+#   methods/target/riscv-guest/logos_lez_rln_methods/logos_lez_rln_guest/riscv32im-risc0-zkvm-elf/release/
+# but client.rs const strings expect them under
+#   methods/guest/target/riscv32im-risc0-zkvm-elf/docker/
+# so we symlink after the build. TODO: unify the paths in client.rs +
+# build.rs and drop the symlink step.
 ensure_risc0_guest_binaries() {
-    local guest_dir="$LEZ_RLN_DIR/lez-rln/methods/guest/target/riscv32im-risc0-zkvm-elf/docker"
-    if [ -f "$guest_dir/rln_registration.bin" ] && \
-       [ -f "$guest_dir/incremental_merkle_tree.bin" ]; then
+    local expected_dir="$LEZ_RLN_DIR/lez-rln/methods/guest/target/riscv32im-risc0-zkvm-elf/docker"
+    if [ -f "$expected_dir/rln_registration.bin" ] && \
+       [ -f "$expected_dir/incremental_merkle_tree.bin" ]; then
         skip "RISC0 guest binaries already built"
         return 0
     fi
-    command -v cargo-risczero >/dev/null || \
-        die "cargo-risczero not on PATH — install via rzup (https://dev.risczero.com/api/zkvm/install)"
-    command -v docker >/dev/null || die "docker not on PATH — required by cargo risczero build"
+    command -v cargo >/dev/null || die "cargo not on PATH"
 
-    log "Building RISC0 guest binaries via 'cargo risczero build' (Docker, ~10 min)..."
-    (cd "$LEZ_RLN_DIR/lez-rln" && \
-        cargo risczero build --manifest-path methods/guest/Cargo.toml 2>&1 | tail -3) \
-        || die "cargo risczero build failed"
+    log "Building RISC0 guest binaries via 'cargo build' (host risc0 toolchain)..."
+    (cd "$LEZ_RLN_DIR/lez-rln/methods" && \
+        env ${PY_FOR_PYO3:+PYO3_PYTHON="$PY_FOR_PYO3"} cargo build --release 2>&1 | tail -3) \
+        || die "cargo build (methods host + guest) failed"
+
+    local build_dir="$LEZ_RLN_DIR/lez-rln/methods/target/riscv-guest/logos_lez_rln_methods/logos_lez_rln_guest/riscv32im-risc0-zkvm-elf/release"
+    for name in rln_registration.bin incremental_merkle_tree.bin; do
+        [ -f "$build_dir/$name" ] || die "guest build produced no $build_dir/$name"
+    done
+    mkdir -p "$expected_dir"
+    ln -sf "$build_dir/rln_registration.bin"      "$expected_dir/rln_registration.bin"
+    ln -sf "$build_dir/incremental_merkle_tree.bin" "$expected_dir/incremental_merkle_tree.bin"
 }
 
 # ---------- Step 3c — stage testnet fixtures from the shared deployment ----------
