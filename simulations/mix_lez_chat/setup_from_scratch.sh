@@ -263,6 +263,27 @@ ensure_liblogosdelivery() {
         || die "make liblogosdelivery failed"
 }
 
+# ---------- Step 4b — bridge librln version pin mismatch ----------
+#
+# logos-chat/Makefile pins MIX_LIBRLN_VERSION=v2.0.2 and expects the archive
+# at $DELIVERY_DIR/librln_v2.0.2.a — a name from an earlier delivery build era.
+# Current delivery produces build/librln_mix_v2.0.0.a instead. Bridge the
+# naming so liblogoschat's make finds an archive at the pinned path.
+# TODO: unify the version pins across chat + delivery + zerokit and drop this.
+ensure_librln_bridge() {
+    local rln_chat_expected="$DELIVERY_DIR/librln_v2.0.2.a"
+    if [ -f "$rln_chat_expected" ]; then
+        skip "librln bridge already in place"
+        return 0
+    fi
+    local rln_mix="$DELIVERY_DIR/build/librln_mix_v2.0.0.a"
+    if [ ! -f "$rln_mix" ]; then
+        die "librln bridge: neither $rln_chat_expected nor $rln_mix present — did liblogosdelivery build?"
+    fi
+    log "Bridging librln archive: cp build/librln_mix_v2.0.0.a -> librln_v2.0.2.a"
+    cp "$rln_mix" "$rln_chat_expected"
+}
+
 # ---------- Step 5 — build chat dylib (with prep applied first) ----------
 ensure_liblogoschat() {
     local out="$LOGOS_CHAT_DIR/build/liblogoschat"
@@ -473,6 +494,7 @@ bootstrap_all() {
     ensure_lez_rln_rust_binaries
     ensure_risc0_guest_binaries
     ensure_liblogosdelivery
+    ensure_librln_bridge
     ensure_liblogoschat
     ensure_delivery_module_plugin_optional
     ensure_testnet_fixtures_staged
