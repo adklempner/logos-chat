@@ -297,8 +297,27 @@ ensure_liblogoschat() {
     rename_libp2p_carcass
     mirror_chat_nimbledeps
     log "Building liblogoschat.$ext (this takes ~5 min on first build)..."
-    (cd "$LOGOS_CHAT_DIR" && make update && make liblogoschat 2>&1 | tail -3) \
+    (cd "$LOGOS_CHAT_DIR" && make liblogoschat 2>&1 | tail -3) \
         || die "make liblogoschat failed"
+}
+
+# ---------- Step 0 — chat-side `make update` ----------
+#
+# nimbus-build-system's update-common target does:
+#   git submodule foreach ... 'git ls-files ... | xargs rm -rf'
+#   git submodule foreach --recursive 'git reset --hard'
+# which wipes the fork checkout we auto-cloned into vendor/logos-lez-rln/
+# logos-delivery-module/vendor/logos-delivery and resets it to the pinned
+# upstream/master rev. Run it FIRST so all subsequent delivery/librln
+# work persists through to liblogoschat.
+ensure_chat_make_update() {
+    if [ -f "$LOGOS_CHAT_DIR/logos_chat.nims" ]; then
+        skip "chat make update already run (logos_chat.nims present)"
+        return 0
+    fi
+    log "Running chat-side 'make update' (regenerates logos_chat.nims, resets submodules)..."
+    (cd "$LOGOS_CHAT_DIR" && make update 2>&1 | tail -3) \
+        || die "make update failed"
 }
 
 # ---------- Step 1b — lssa sibling clone ----------
@@ -487,6 +506,7 @@ bootstrap_all() {
     log "  LEZ_RLN_DIR=$LEZ_RLN_DIR"
     log "  DELIVERY_DIR=$DELIVERY_DIR"
 
+    ensure_chat_make_update
     ensure_chat_module_sibling
     ensure_lssa_sibling
     ensure_spel_sibling
