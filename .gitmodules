@@ -31,4 +31,4 @@
 [submodule "vendor/logos-lez-rln"]
 	path = vendor/logos-lez-rln
 	url = https://github.com/logos-co/logos-lez-rln.git
-	branch = feat/mix-rln-gifter-sim
+	branch = main
