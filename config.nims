@@ -1,8 +1,11 @@
-import std/os
+import std/[os, strutils]
 
-# all vendor subdirectories
+# all vendor subdirectories, excluding nwaku (a pre-rebase copy of
+# logos-delivery that shadows the newer tree at
+# vendor/logos-lez-rln/logos-delivery-module/vendor/logos-delivery when
+# the latter is being built from within this parent config).
 for dir in walkDir(thisDir() / "vendor"):
-  if dir.kind == pcDir:
+  if dir.kind == pcDir and not dir.path.endsWith("/nwaku"):
     switch("path", dir.path)
     switch("path", dir.path / "src")
 
