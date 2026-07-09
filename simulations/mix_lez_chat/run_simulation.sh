@@ -56,18 +56,24 @@ NODEKEYS=(
     "09e9d134331953357bd38bbfce8edb377f4b6308b4f3bfbe85c610497053d684"
     "ed54db994682e857d77cd6fb81be697382dc43aa5cd78e16b0ec8098549f860e"
     "42f96f29f2d6670938b0864aced65a332dcf5774103b4c44ec4d0ea4ef3c47d6"
+    "1d3a29b6cfeb7f88ea1e0e6c5aad9d8267d59c39a5b41a9e847ffd4c3e0b62f7"
+    "5c94a1f0d68d4b3ea18b7b46f6e2eeb92d9d0be8e4b6721f9d3a03f2e88a51c8"
 )
 PEER_IDS=(
     "16Uiu2HAmPiEs2ozjjJF2iN2Pe2FYeMC9w4caRHKYdLdAfjgbWM6o"
     "16Uiu2HAmLtKaFaSWDohToWhWUZFLtqzYZGPFuXwKrojFVF6az5UF"
     "16Uiu2HAmTEDHwAziWUSz6ZE23h5vxG2o4Nn7GazhMor4bVuMXTrA"
     "16Uiu2HAmPwRKZajXtfb1Qsv45VVfRZgK3ENdfmnqzSrVm3BczF6f"
+    ""
+    ""
 )
 MIXKEYS=(
     "c86029e02c05a7e25182974b519d0d52fcbafeca6fe191fbb64857fb05be1a53"
     "b858ac16bbb551c4b2973313b1c8c8f7ea469fca03f1608d200bbf58d388ec7f"
     "d8bd379bb394b0f22dd236d63af9f1a9bc45266beffc3fbbe19e8b6575f2535b"
     "780fff09e51e98df574e266bf3266ec6a3a1ddfcf7da826a349a29c137009d49"
+    "af28661d6fed30ca979ee460d4527446574d922532cf32b99e63ea92edac3e7d"
+    "c7e905d2f2a7d4db754403bd5e9fe07ef6180a6d557dc8213fac50eb68cc1e3b"
 )
 MIX_PUBKEYS=(
     "9231e86da6432502900a84f867004ce78632ab52cd8e30b1ec322cd795710c2a"
@@ -318,8 +324,7 @@ for check in \
     "$RLN_MODULE/liblogos_rln_module.$EXT" \
     "$WALLET_MODULE/liblogos_execution_zone_wallet_module.$EXT" \
     "$DELIVERY_PLUGIN" \
-    "$CHAT_PLUGIN" \
-    "$CHAT_LIB"; do
+    "$CHAT_PLUGIN"; do
     [ -f "$check" ] || die "Missing: $check"
 done
 log "  All modules present."
@@ -467,7 +472,9 @@ for j in $(seq 0 $((NUM_NODES - 1))); do
     MIXNODE_LIST="$MIXNODE_LIST\"/ip4/127.0.0.1/tcp/$((BASE_TCP_PORT + j))/p2p/${PEER_IDS[$j]}:${MIX_PUBKEYS[$j]}\""
 done
 
-# Stage wallet + RLN + chat modules for a logoscore instance.
+# Stage wallet + RLN + delivery + chat modules for a logoscore instance.
+# Post-#32 the Rust chat_module no longer bundles delivery internally; the
+# sim now brings delivery up explicitly and hands off via init_after_delivery.
 stage_chat_module() {
     local MDIR=$1
     mkdir -p "$MDIR/liblogos_execution_zone_wallet_module"
@@ -480,78 +487,116 @@ stage_chat_module() {
     cp -L "$RLN_MODULE/liblez_rln_ffi.$EXT" "$MDIR/liblogos_rln_module/" 2>/dev/null || true
     echo "{\"name\":\"liblogos_rln_module\",\"version\":\"1.0.0\",\"type\":\"core\",\"main\":{\"$PLATFORM\":\"liblogos_rln_module.$EXT\"},\"dependencies\":[\"liblogos_execution_zone_wallet_module\"],\"capabilities\":[]}" > "$MDIR/liblogos_rln_module/manifest.json"
 
+    mkdir -p "$MDIR/delivery_module"
+    cp -L "$DELIVERY_PLUGIN" "$MDIR/delivery_module/"
+    if [ -f "$DELIVERY_DIR/build/liblogosdelivery.$EXT" ]; then
+        cp -L "$DELIVERY_DIR/build/liblogosdelivery.$EXT" "$MDIR/delivery_module/"
+    else
+        cp -L "$DELIVERY_MODULE_DIR/result/lib/liblogosdelivery.$EXT" "$MDIR/delivery_module/" 2>/dev/null || true
+    fi
+    for pq in "$DELIVERY_MODULE_DIR"/result/lib/libpq*; do [ -f "$pq" ] && cp -L "$pq" "$MDIR/delivery_module/"; done
+    echo "{\"name\":\"delivery_module\",\"version\":\"1.0.0\",\"type\":\"core\",\"main\":{\"$PLATFORM\":\"delivery_module_plugin.$EXT\"},\"dependencies\":[],\"capabilities\":[]}" > "$MDIR/delivery_module/manifest.json"
+
     mkdir -p "$MDIR/chat_module"
     cp -L "$CHAT_PLUGIN" "$MDIR/chat_module/"
-    cp -L "$CHAT_LIB" "$MDIR/chat_module/"
-    echo "{\"name\":\"chat_module\",\"version\":\"1.0.0\",\"type\":\"core\",\"main\":{\"$PLATFORM\":\"chat_module_plugin.$EXT\"},\"dependencies\":[],\"capabilities\":[]}" > "$MDIR/chat_module/manifest.json"
+    echo "{\"name\":\"chat_module\",\"version\":\"1.0.0\",\"type\":\"core\",\"main\":{\"$PLATFORM\":\"chat_module_plugin.$EXT\"},\"dependencies\":[\"delivery_module\"],\"capabilities\":[]}" > "$MDIR/chat_module/manifest.json"
 }
 
-CHAT_LOAD_ORDER="liblogos_execution_zone_wallet_module,liblogos_rln_module,chat_module"
+# Delivery-shaped JSON for a chat instance (sender/receiver). Mirrors the mix-
+# node NODE_CONFIG template above but with mix=false (chat instances USE the
+# mix relay, they don't advertise as one). Gifter uses non-service auth flow.
+write_chat_delivery_config() {
+    local OUT="$1" IDX="$2" TCP_PORT="$3" AUTH_KEY="$4" INSTANCE_NAME="$5"
+    local KADBS="[\"$BOOTSTRAP_PEER\"]"
+    local PEER_LIST=""
+    for j in $(seq 0 $((NUM_NODES - 1))); do
+        [ -n "$PEER_LIST" ] && PEER_LIST="$PEER_LIST,"
+        PEER_LIST="$PEER_LIST\"/ip4/127.0.0.1/tcp/$((BASE_TCP_PORT + j))/p2p/${PEER_IDS[$j]}\""
+    done
+    local DISC_PORT=$((BASE_DISC_PORT + IDX))
+    cat > "$OUT" <<CFG
+{
+  "clusterId": $CLUSTER_ID,
+  "numShardsInNetwork": $NUM_SHARDS,
+  "listenAddress": "127.0.0.1",
+  "tcpPort": $TCP_PORT,
+  "discv5UdpPort": $DISC_PORT,
+  "nat": "extip:127.0.0.1",
+  "extMultiAddrs": ["/ip4/127.0.0.1/tcp/$TCP_PORT"],
+  "extMultiAddrsOnly": true,
+  "nodekey": "${NODEKEYS[$IDX]}",
+  "staticnodes": [$PEER_LIST],
+  "relay": true,
+  "lightpush": true,
+  "filter": true,
+  "mix": true,
+  "mixkey": "${MIXKEYS[$IDX]}",
+  "mixnodes": [$MIXNODE_LIST],
+  "mixOnchainLEZ": true,
+  "mixGifterNode": "$BOOTSTRAP_PEER",
+  "mixGifterWalletAccount": "$GIFTER_ACCOUNT",
+  "mixGifterAuthKey": "$AUTH_KEY",
+  "enableKadDiscovery": true,
+  "kadBootstrapNodes": $KADBS,
+  "peerExchange": false,
+  "rendezvous": false,
+  "colocationLimit": 0,
+  "logLevel": "$LOG_LEVEL"
+}
+CFG
+}
+
+CHAT_LOAD_ORDER="liblogos_execution_zone_wallet_module,liblogos_rln_module,delivery_module,chat_module"
 
 # --- Receiver ---
 RECV_MDIR=$(mktemp -d); MODULES_DIRS+=("$RECV_MDIR")
 stage_chat_module "$RECV_MDIR"
 
-RECV_CONFIG="$STATE_DIR/chat_receiver_config.json"
-# Static peers so chat nodes join the relay mesh.
-CHAT_STATIC_PEERS=""
-for j in $(seq 0 $((NUM_NODES - 1))); do
-    [ -n "$CHAT_STATIC_PEERS" ] && CHAT_STATIC_PEERS="$CHAT_STATIC_PEERS,"
-    CHAT_STATIC_PEERS="$CHAT_STATIC_PEERS\"/ip4/127.0.0.1/tcp/$((BASE_TCP_PORT + j))/p2p/${PEER_IDS[$j]}\""
-done
-cat > "$RECV_CONFIG" <<EOF
-{
-  "name": "receiver",
-  "clusterId": $CLUSTER_ID,
-  "shardId": 0,
-  "port": $CHAT_RECV_PORT,
-  "mixEnabled": true,
-  "mixNodes": [$MIXNODE_LIST],
-  "destPeerAddr": "$BOOTSTRAP_PEER",
-  "minMixPoolSize": 4,
-  "gifterNodeAddr": "$BOOTSTRAP_PEER",
-  "gifterAuthKey": "$KEY_RECEIVER",
-  "staticPeers": [$CHAT_STATIC_PEERS]
-}
-EOF
+RECV_CONFIG="$STATE_DIR/chat_receiver_delivery.json"
+write_chat_delivery_config "$RECV_CONFIG" 4 "$CHAT_RECV_PORT" "$KEY_RECEIVER" "receiver"
 
-TEST_MSG_HEX=$(printf '%s' "$TEST_MESSAGE_PREFIX" | xxd -p | tr -d '\n')
+RECV_INSTANCE_DIR="$STATE_DIR/chat_receiver_instance"
+mkdir -p "$RECV_INSTANCE_DIR"
 
 log "  Starting receiver..."
 (cd "$STATE_DIR" && TMPDIR=/tmp "$LOGOSCORE" -m "$RECV_MDIR" -l "$CHAT_LOAD_ORDER" \
     -c "$WALLET_CALL" \
-    -c "chat_module.initChat(@$RECV_CONFIG)" \
-    -c "chat_module.setEventCallback()" \
-    -c "chat_module.startChat()" \
-    -c "chat_module.setRlnConfig($CONFIG_ACCOUNT,5)" \
-    -c "chat_module.createIntroBundle()" \
+    -c "delivery_module.createNode(@$RECV_CONFIG)" \
+    -c "delivery_module.start()" \
+    -c "delivery_module.setRlnConfig($CONFIG_ACCOUNT,5)" \
+    -c "delivery_module.subscribe($CONTENT_TOPIC)" \
+    -c "chat_module.init_after_delivery($RECV_INSTANCE_DIR)" \
+    -c "chat_module.get_address()" \
     </dev/null >"$RECEIVER_LOG" 2>&1) &
 RECEIVER_PID=$!; INSTANCE_PIDS+=($RECEIVER_PID)
 log "  Receiver PID: $RECEIVER_PID"
 
-RECV_EXPECTED=6
+RECV_EXPECTED=7
 wait_method_calls "$RECEIVER_LOG" "$RECV_EXPECTED" 180 2 || true
 log "  Receiver method calls: $N/$RECV_EXPECTED"
 
-# Extract intro bundle (emitted as chatCreateIntroBundleResult).
-INTRO_BUNDLE=""
+# Extract the DirectV1 address (get_address returns a plain account addr
+# string; logoscore prints it as the invoke result). Peer opens a convo with
+# create_conversation(this_address).
+PEER_ADDRESS=""
 for t in $(seq 1 30); do
-    INTRO_BUNDLE=$(grep -oE 'logos_chatintro_[A-Za-z0-9_-]+' "$RECEIVER_LOG" 2>/dev/null | head -1 || true)
-    [ -n "$INTRO_BUNDLE" ] && break; sleep 2
+    PEER_ADDRESS=$(grep -oE '"[a-zA-Z0-9]{20,}"' "$RECEIVER_LOG" 2>/dev/null \
+        | grep -v 'logos_' | head -1 | tr -d '"' || true)
+    [ -n "$PEER_ADDRESS" ] && break; sleep 2
 done
-if [ -n "$INTRO_BUNDLE" ]; then
-    log "  Receiver intro bundle: ${INTRO_BUNDLE:0:40}..."
+if [ -n "$PEER_ADDRESS" ]; then
+    log "  Receiver DirectV1 address: ${PEER_ADDRESS:0:40}..."
 else
-    log "  WARNING: Could not extract intro bundle from receiver log"
+    log "  WARNING: Could not extract receiver address from log"
 fi
 
-# Wait for async startChat (Waku client started) + a floor for the filter
-# subscription to propagate through the relay mesh.
+# Wait for delivery_module.start to complete (Nim: "Node started successfully")
+# + a floor for the filter subscription to propagate through the relay mesh.
 echo "  Waiting for receiver to join mix network..."
 JOIN_T0=$SECONDS
 while true; do
     ELAPSED=$((SECONDS - JOIN_T0))
-    RS=$(grep -c "Waku client started" "$RECEIVER_LOG" 2>/dev/null || true); RS=${RS:-0}
+    RS=$(grep -c "Node started successfully\|Waku client started" "$RECEIVER_LOG" 2>/dev/null || true); RS=${RS:-0}
     [ "$ELAPSED" -ge "$RECEIVER_MIN_WAIT" ] && [ "$RS" -ge 1 ] && break
     [ "$ELAPSED" -ge 60 ] && break
     sleep 1
@@ -562,33 +607,24 @@ log "  Receiver joined after $((SECONDS - JOIN_T0))s"
 SEND_MDIR=$(mktemp -d); MODULES_DIRS+=("$SEND_MDIR")
 stage_chat_module "$SEND_MDIR"
 
-SEND_CONFIG="$STATE_DIR/chat_sender_config.json"
-cat > "$SEND_CONFIG" <<EOF
-{
-  "name": "sender",
-  "clusterId": $CLUSTER_ID,
-  "shardId": 0,
-  "port": $CHAT_SEND_PORT,
-  "mixEnabled": true,
-  "mixNodes": [$MIXNODE_LIST],
-  "destPeerAddr": "$BOOTSTRAP_PEER",
-  "minMixPoolSize": 4,
-  "gifterNodeAddr": "$BOOTSTRAP_PEER",
-  "gifterAuthKey": "$KEY_SENDER",
-  "staticPeers": [$CHAT_STATIC_PEERS]
-}
-EOF
+SEND_CONFIG="$STATE_DIR/chat_sender_delivery.json"
+write_chat_delivery_config "$SEND_CONFIG" 5 "$CHAT_SEND_PORT" "$KEY_SENDER" "sender"
 
-# Sender -c calls: init/start/setRlnConfig, then newPrivateConversation if
-# we have the receiver's intro bundle.
-SENDER_CALLS="-c \"$WALLET_CALL\""
-SENDER_CALLS="$SENDER_CALLS -c \"chat_module.initChat(@$SEND_CONFIG)\""
-SENDER_CALLS="$SENDER_CALLS -c \"chat_module.setEventCallback()\""
-SENDER_CALLS="$SENDER_CALLS -c \"chat_module.startChat()\""
+SEND_INSTANCE_DIR="$STATE_DIR/chat_sender_instance"
+mkdir -p "$SEND_INSTANCE_DIR"
+
+# Post-#32 flow: bring delivery up explicitly, hand off to chat via
+# init_after_delivery, then create_conversation + send_message.
 # RLN leaf layout: 0-3 mix nodes, 4 gifter-reserved, 5 receiver, 6 sender.
-SENDER_CALLS="$SENDER_CALLS -c \"chat_module.setRlnConfig($CONFIG_ACCOUNT,6)\""
-if [ -n "$INTRO_BUNDLE" ]; then
-    SENDER_CALLS="$SENDER_CALLS -c \"chat_module.newPrivateConversation($INTRO_BUNDLE,$TEST_MSG_HEX)\""
+SENDER_CALLS="-c \"$WALLET_CALL\""
+SENDER_CALLS="$SENDER_CALLS -c \"delivery_module.createNode(@$SEND_CONFIG)\""
+SENDER_CALLS="$SENDER_CALLS -c \"delivery_module.start()\""
+SENDER_CALLS="$SENDER_CALLS -c \"delivery_module.setRlnConfig($CONFIG_ACCOUNT,6)\""
+SENDER_CALLS="$SENDER_CALLS -c \"delivery_module.subscribe($CONTENT_TOPIC)\""
+SENDER_CALLS="$SENDER_CALLS -c \"chat_module.init_after_delivery($SEND_INSTANCE_DIR)\""
+if [ -n "$PEER_ADDRESS" ]; then
+    SENDER_CALLS="$SENDER_CALLS -c \"chat_module.create_conversation($PEER_ADDRESS)\""
+    SENDER_CALLS="$SENDER_CALLS -c \"chat_module.send_message($PEER_ADDRESS,$TEST_MESSAGE_PREFIX)\""
 fi
 
 log "  Starting sender..."
@@ -599,16 +635,16 @@ SENDER_PID=$!; INSTANCE_PIDS+=($SENDER_PID)
 log "  Sender PID: $SENDER_PID"
 
 SEND_EXPECTED=6
-[ -n "$INTRO_BUNDLE" ] && SEND_EXPECTED=7
+[ -n "$PEER_ADDRESS" ] && SEND_EXPECTED=8
 wait_method_calls "$SENDER_LOG" "$SEND_EXPECTED" 180 2 || true
 
 # On slower systems (Docker/ARM) the sender's async gifter registration may
-# trail newPrivateConversation. Wait for RLN readiness; the Nim async code
-# retries newPrivateConversation once credentials land.
+# trail create_conversation. Wait for RLN readiness; delivery's Nim async
+# code retries the send once credentials land.
 echo "  Waiting for sender RLN readiness..."
 SENDER_RLN_T0=$SECONDS
 for t in $(seq 1 60); do
-    SG=$(sed 's/\x1b\[[0-9;]*m//g' "$SENDER_LOG" 2>/dev/null | grep -c "Registered via RLN gifter\|Waku client started" || true)
+    SG=$(sed 's/\x1b\[[0-9;]*m//g' "$SENDER_LOG" 2>/dev/null | grep -c "Registered via RLN gifter\|Node started successfully" || true)
     [ "${SG:-0}" -ge 2 ] && break
     sleep 1
 done
@@ -620,7 +656,7 @@ log "  Sender method calls: $N/$SEND_EXPECTED"
 echo "  Waiting for message delivery via mix..."
 DELIVERY_T0=$SECONDS
 for t in $(seq 1 $DELIVERY_TIMEOUT); do
-    RM=$(grep -c "chatNewMessage\|chatNewConversation\|New Message\|new_message" "$RECEIVER_LOG" 2>/dev/null || true); RM=${RM:-0}
+    RM=$(grep -c "message_received" "$RECEIVER_LOG" 2>/dev/null || true); RM=${RM:-0}
     [ "$RM" -ge 1 ] && break
     sleep 1
 done
@@ -655,13 +691,17 @@ check "[ $LEZ_ROOTS -ge 1 ]" "LEZ RLN active ($LEZ_ROOTS events across nodes)"
 echo ""
 
 echo "  --- chat module ---"
-RECV_INIT=$(grep -c "chatInitResult\|Chat context created" "$RECEIVER_LOG" 2>/dev/null || true)
+# Post-#32: chat readiness now piggybacks on delivery_state_changed(online);
+# the Rust module emits it via the LIDL event fanout after
+# init_after_delivery flips its state. Fall back to delivery-side
+# "Node started successfully" so we don't hard-depend on event routing.
+RECV_INIT=$(grep -c "init_after_delivery\|Node started successfully" "$RECEIVER_LOG" 2>/dev/null || true)
 check "[ ${RECV_INIT:-0} -ge 1 ]" "Receiver initialized ($RECV_INIT)"
-RECV_START=$(grep -c "chatStartResult\|Waku client started" "$RECEIVER_LOG" 2>/dev/null || true)
+RECV_START=$(grep -c "delivery_state_changed.*online\|Node started successfully" "$RECEIVER_LOG" 2>/dev/null || true)
 check "[ ${RECV_START:-0} -ge 1 ]" "Receiver started ($RECV_START)"
-SEND_INIT=$(grep -c "chatInitResult\|Chat context created" "$SENDER_LOG" 2>/dev/null || true)
+SEND_INIT=$(grep -c "init_after_delivery\|Node started successfully" "$SENDER_LOG" 2>/dev/null || true)
 check "[ ${SEND_INIT:-0} -ge 1 ]" "Sender initialized ($SEND_INIT)"
-SEND_START=$(grep -c "chatStartResult\|Waku client started" "$SENDER_LOG" 2>/dev/null || true)
+SEND_START=$(grep -c "delivery_state_changed.*online\|Node started successfully" "$SENDER_LOG" 2>/dev/null || true)
 check "[ ${SEND_START:-0} -ge 1 ]" "Sender started ($SEND_START)"
 
 RECV_MIX=$(grep -c "mounting mix protocol\|Wired LEZ callbacks" "$RECEIVER_LOG" 2>/dev/null || true)
@@ -669,14 +709,21 @@ check "[ ${RECV_MIX:-0} -ge 1 ]" "Receiver mounted mix+LEZ ($RECV_MIX)"
 SEND_MIX=$(grep -c "mounting mix protocol\|Wired LEZ callbacks" "$SENDER_LOG" 2>/dev/null || true)
 check "[ ${SEND_MIX:-0} -ge 1 ]" "Sender mounted mix+LEZ ($SEND_MIX)"
 
-RECV_BUNDLE=$(grep -c "logos_chatintro_" "$RECEIVER_LOG" 2>/dev/null || true)
-check "[ ${RECV_BUNDLE:-0} -ge 1 ]" "Receiver created intro bundle ($RECV_BUNDLE)"
+# Rust chat_module: get_address returns a plain account addr string logged by
+# logoscore as the invoke result; presence of any non-error output from that
+# call means we got an address. Empty PEER_ADDRESS above already logs a
+# WARNING.
+RECV_BUNDLE=$([ -n "$PEER_ADDRESS" ] && echo 1 || echo 0)
+check "[ ${RECV_BUNDLE:-0} -ge 1 ]" "Receiver produced DirectV1 address ($RECV_BUNDLE)"
 echo ""
 
 echo "  --- message exchange ---"
-SEND_MSG=$(grep -c "chatNewPrivateConversationResult\|chatSendMessageResult\|Message sent via mix" "$SENDER_LOG" 2>/dev/null || true)
+# Post-#32: sender emits `message_sent` LIDL event through logoscore's event
+# fanout; receiver emits `message_received` (the libchat client decrypts the
+# inbound frame and hands the plaintext up via crate::emit_message_received).
+SEND_MSG=$(grep -c "message_sent\|conversation_created" "$SENDER_LOG" 2>/dev/null || true)
 check "[ ${SEND_MSG:-0} -ge 1 ]" "Sender sent message ($SEND_MSG)"
-RECV_MSG=$(grep -c "chatNewMessage\|chatNewConversation\|New Message\|new_message" "$RECEIVER_LOG" 2>/dev/null || true)
+RECV_MSG=$(grep -c "message_received" "$RECEIVER_LOG" 2>/dev/null || true)
 check "[ ${RECV_MSG:-0} -ge 1 ]" "Receiver received message ($RECV_MSG)"
 
 echo ""; echo "  =========================================="
