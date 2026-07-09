@@ -221,7 +221,7 @@ SIM_NETWORK=testnet SIM_SLIM=1 SIM_DELIVERY_TIMEOUT=1800 \
 `SIM_DELIVERY_TIMEOUT=1800` (30 min) is required: the gifter serializes
 registrations through a single-writer worker that awaits chain
 confirmation between submissions to avoid per-signer nonce collisions
-(see `../../MODE_A_GIFTER_SLOT_BUG.md`). With testnet's ~60-90 s block
+(see `MODE_A_GIFTER_SLOT_BUG.md`). With testnet's ~60-90 s block
 cadence and up to ~6 jobs ahead in the queue, the chat sender (last in
 line) needs the longer window — the default 300 s would expire before
 its registration confirms.

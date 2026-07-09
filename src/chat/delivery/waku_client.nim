@@ -241,37 +241,21 @@ proc sendBytes*(client: WakuClient, contentTopic: string,
 
   if client.cfg.mixEnabled and client.mixReady:
     info "Sending via mix (lightpushPublish)", contentTopic = contentTopic, mixPoolSize = client.node.getMixNodePoolSize()
-    # PHASE-A INSTRUMENTATION: log right before invoking lightpushPublish so
-    # we can correlate the chat-client send attempt with downstream mix-node
-    # incoming-sphinx logs. Identifies whether the chat client got past
-    # peer selection + sphinx wrap.
-    info "[PHASE-A] mix-send: about to call lightpushPublish",
-      msgLen = msg.payload.len, pubsubTopic = client.cfg.pubsubTopic
-    try: stderr.writeLine("[INSTR2] CHAT mix-send: BEFORE lightpushPublish call msgLen=" & $msg.payload.len); stderr.flushFile() except IOError: discard
     let publishFut = client.node.lightpushPublish(
       some(PubsubTopic(client.cfg.pubsubTopic)), msg, none(RemotePeerInfo), mixify = true
     )
-    try: stderr.writeLine("[INSTR2] CHAT mix-send: AFTER lightpushPublish call (future obtained), about to withTimeout(60s)"); stderr.flushFile() except IOError: discard
-    # PHASE-B+C MITIGATION: bump the SURB-reply timeout from 15s → 60s so
-    # slower machines have headroom for the round-trip back through the
-    # mix path. Downgrade the timeout from `error` to `warn` because the
-    # forward delivery is independent of the SURB reply — phase-A logs
-    # confirmed that on attempts where mix-exit fires + receiver gets
-    # "Received message push" (delivery succeeds), the sender still
-    # logs SURB-reply timeout. Treating that as `error` makes callers
-    # incorrectly mark conversations failed when the message went through.
+    # Forward delivery through the mix is independent of the SURB reply:
+    # the message can reach the receiver while the sender never hears back.
+    # So a missing SURB reply is a warn, not an error, and gets a generous
+    # 60s deadline for the round trip back through the mix path.
     if not await publishFut.withTimeout(60.seconds):
-      try: stderr.writeLine("[INSTR2] CHAT mix-send: TIMEOUT — publishFut.withTimeout(60s) did NOT complete; cancelling"); stderr.flushFile() except IOError: discard
       await publishFut.cancelAndWait()
       warn "Mix lightpush: no SURB reply within 60s; message may have been delivered (forward path is independent of SURB reply)"
     else:
-      try: stderr.writeLine("[INSTR2] CHAT mix-send: publishFut COMPLETED within 60s"); stderr.flushFile() except IOError: discard
       let res = publishFut.read()
       if res.isErr:
-        try: stderr.writeLine("[INSTR2] CHAT mix-send: publishFut returned Err " & $res.error); stderr.flushFile() except IOError: discard
         error "Failed to publish via mix", err = $res.error
       else:
-        try: stderr.writeLine("[INSTR2] CHAT mix-send: publishFut returned Ok"); stderr.flushFile() except IOError: discard
         info "Message sent via mix successfully"
   else:
     warn "Sending via relay fallback (mix not ready or not enabled)",
