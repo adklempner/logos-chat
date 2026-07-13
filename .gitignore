@@ -37,6 +37,10 @@ nimble.paths
 /metrics/prometheus
 /metrics/waku-sim-all-nodes-grafana-dashboard.json
 
+# Simulation runtime state (logs, keystores, configs generated per run)
+/simulations/**/.sim_state/
+/simulations/**/.tree_id_hex
+
 *.log
 /package-lock.json
 /package.json
@@ -93,3 +97,6 @@ result
 .savedkeys/
 
 AGENTS.md
+
+# sim-monitor build outputs (CMake/Ninja artifacts)
+/simulations/mix_lez_chat/sim-monitor/build/
